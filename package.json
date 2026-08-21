@@ -1,0 +1,46 @@
+{
+    "name": "poc-mos-vip-edge-workers",
+    "version": "0.1.0",
+    "description": "A local runner, test harness and browser playground for WordPress VIP AssemblyScript edge workers, plus a real-world example worker",
+    "license": "MIT",
+    "type": "module",
+    "keywords": [
+        "wordpress-vip",
+        "edge-workers",
+        "assemblyscript",
+        "webassembly",
+        "lol-html"
+    ],
+    "scripts": {
+        "build": "node scripts/build.mjs",
+        "build:all": "npm run build -- hello && npm run build -- crypto && npm run build -- conformance && npm run build -- wire && npm run build",
+        "artifact:report": "node scripts/artifact-report.mjs",
+        "test:artifacts": "npm run build:all && node scripts/artifact-report.mjs --check",
+        "build:test": "node scripts/build.mjs --test",
+        "build:web": "node scripts/build.mjs && node scripts/build-web.mjs",
+        "web": "npm run build:web && node server.mjs",
+        "test": "node scripts/build.mjs --test && node mos-proxy/test.mjs",
+        "test:e2e": "node scripts/build.mjs && node mos-proxy/e2e.mjs",
+        "test:web": "npm run build:web && node mos-proxy/smoke.mjs",
+        "test:live": "npm run build:web && node mos-proxy/live-check.mjs",
+        "test:all": "npm run test:wire && npm run test:hello && npm run test:crypto && npm run test && npm run test:e2e && npm run test:web",
+        "hello": "node scripts/build.mjs hello && node scripts/build-web.mjs hello && node server.mjs",
+        "test:hello": "node scripts/build.mjs hello && node examples/hello/check.mjs",
+        "test:crypto": "node scripts/build.mjs crypto && node examples/crypto/check.mjs",
+        "test:conformance": "node scripts/build.mjs conformance && node examples/conformance/check.mjs",
+        "test:conformance:live": "node examples/conformance/live-check.mjs",
+        "test:wire": "node scripts/build.mjs wire && node examples/wire/check.mjs"
+    },
+    "dependencies": {
+        "@automattic/vip-edge-workers-sdk": "0.3.0",
+        "json-as": "^1.6.0"
+    },
+    "devDependencies": {
+        "assemblyscript": "^0.28.2",
+        "esbuild": "^0.28.2",
+        "html-rewriter-wasm": "0.4.1"
+    },
+    "engines": {
+        "node": ">=22"
+    }
+}
