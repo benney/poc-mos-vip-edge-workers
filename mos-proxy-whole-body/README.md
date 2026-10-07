@@ -4,8 +4,16 @@ The [`mos-proxy`](../mos-proxy) worker in whole-body mode: MOS rewrites the page
 of the edge.
 
 ```bash
-npm run test:whole-body   # 39 end-to-end assertions
+npm run test:whole-body   # end-to-end assertions against a fake MOS and origin
+
+# Serve the worker over HTTP with real fetches, in front of a demo article origin
+node scripts/build.mjs mos-proxy-whole-body
+MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... node mos-proxy-whole-body/serve.mjs
+# site on :4700 (EDGE_PORT), demo origin on :4701 (ORIGIN_PORT); MOS_ORIGIN_URL replaces the demo origin
 ```
+
+firecrest's `e2e-tests/src/adhoc/tickets/whole-body-mode.spec.ts` drives `serve.mjs` against a local
+stack and records the result.
 
 The streaming worker decides before the origin is contacted and replays the decision as
 `HtmlRules` on the way back. MOS never sees the page, and the rules have no end-tag hook.
