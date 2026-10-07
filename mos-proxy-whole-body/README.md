@@ -19,7 +19,7 @@ onClientRequest   GET html navigation
                                                    x-mos-origin-fetch: <token>
                     not uncompressed HTML?    -> respondWith as fetched
                     POST /api/v1/surface-decisions
-                         http.proxyOrigin = { status, body, injectScriptUrl }
+                         http.proxyOrigin = { status, body }
                     respondWith  origin status + headers
                                  + anon cookie + surfaceBehavior.http ops
                                  + surfaceBehavior.http.body if present, else the origin page
@@ -28,11 +28,13 @@ onClientRequest   GET html navigation
 
 MOS fills `resource.meta` from the page and applies `componentBehaviors` with the same
 transforms as the Cloudflare proxy, `replaceRange` included. That needs firecrest's
-`feature/proxy-origin-body` and a secret (`sk_`) key, because `http` is secret-key only.
+`feature/proxy-origin-body`, whole-body mode switched on for the org in sudo (MOS answers
+403 otherwise), and a secret (`sk_`) key, because `http` is secret-key only. The field is
+undocumented.
 
 ## Config
 
-As `mos-proxy`, plus:
+As `mos-proxy`, except `MOS_INJECT_SCRIPT_URL`, which this worker ignores. Plus:
 
 | Var | Default | Notes |
 |---|---|---|

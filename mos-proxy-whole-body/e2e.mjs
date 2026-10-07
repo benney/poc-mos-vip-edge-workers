@@ -103,8 +103,8 @@ section('page view: origin page goes to MOS, transformed page comes back');
     eq('tagged its own fetch', header(state.originCalls[0].headers, 'x-mos-origin-fetch').map((v) => v.length), [64]);
 
     const sent = JSON.parse(state.mosCalls[0].body);
-    const { status, body, injectScriptUrl } = sent.http.proxyOrigin;
-    eq('sent origin status, page and script url', [status, body, injectScriptUrl], [200, ORIGIN_HTML, 'https://cdn.mos.test/mos.js']);
+    eq('sent origin status and page', [sent.http.proxyOrigin.status, sent.http.proxyOrigin.body], [200, ORIGIN_HTML]);
+    eq('and nothing else in proxyOrigin', Object.keys(sent.http.proxyOrigin).sort(), ['body', 'status']);
     eq('left resource.meta for MOS to read from the page', sent.resource, { id: '/story' });
     eq('identifies as the whole-body client', header(state.mosCalls[0].headers, 'x-mos-proxy-client'), ['vip-edge-worker-whole-body-poc']);
 

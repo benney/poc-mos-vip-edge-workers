@@ -120,7 +120,6 @@ onClientRequest((req: Request): void => {
   const proxyOrigin = new ProxyOrigin();
   proxyOrigin.status = origin.status;
   proxyOrigin.body = html;
-  if (cfg.injectScriptUrl.length > 0) proxyOrigin.injectScriptUrl = cfg.injectScriptUrl;
 
   const ua = req.headers.get("user-agent");
   const xff = req.headers.get("x-forwarded-for");

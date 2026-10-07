@@ -72,8 +72,6 @@ export class ProxyOrigin {
   // in surfaceBehavior.http.body.
   @omitnull()
   body: string | null = null;
-  @omitnull()
-  injectScriptUrl: string | null = null;
 }
 
 @json
