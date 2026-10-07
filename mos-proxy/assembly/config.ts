@@ -18,6 +18,8 @@ export class Config {
   anonCookie: string = "mos_anon_id";
   jwtCookie: string = "mos_user_jwt";
   injectScriptUrl: string = "";
+  /** Whole-body mode: where the worker fetches pages from. Empty = the request's own host. */
+  originUrl: string = "";
   ignorePrefixes: string[] = [];
   authRoutes: AuthRoute[] = [];
   anonFallback: bool = true;
@@ -108,6 +110,8 @@ export function loadConfig(): Config {
   if (jwt !== null && jwt.length > 0) c.jwtCookie = jwt;
   const script = getenv("MOS_INJECT_SCRIPT_URL");
   if (script !== null) c.injectScriptUrl = script;
+  const originUrl = getenv("MOS_ORIGIN_URL");
+  if (originUrl !== null && originUrl.length > 0) c.originUrl = trimTrailingSlash(originUrl);
   const fallback = getenv("MOS_ANON_FALLBACK");
   if (fallback !== null && fallback == "false") c.anonFallback = false;
 

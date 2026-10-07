@@ -8,7 +8,7 @@ import { loadConfig } from "./config";
 import { applyHttpOps, applyPlan, buildImmediateResponse, compilePlan, parsePlan, planIsEmpty, PLAN_HEADER, serializePlan } from "./rules";
 import { fetchDecisions } from "./decisions";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
-import { firstIp, pathOf } from "./http";
+import { firstIp, looksLikeAsset, pathOf } from "./http";
 
 export {
   alloc,
@@ -17,19 +17,6 @@ export {
   // Custom endpoints forward the client body; authenticated routes read it as JSON.
   client_request_body,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
-
-const ASSET_SUFFIXES: string[] = [
-  ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif",
-  ".ico", ".woff", ".woff2", ".ttf", ".map", ".json", ".xml", ".txt", ".mp4", ".pdf",
-];
-
-function looksLikeAsset(path: string): bool {
-  const lower = path.toLowerCase();
-  for (let i = 0; i < ASSET_SUFFIXES.length; i++) {
-    if (lower.endsWith(ASSET_SUFFIXES[i])) return true;
-  }
-  return false;
-}
 
 onClientRequest((req: Request): void => {
   const cfg = loadConfig();

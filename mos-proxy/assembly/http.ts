@@ -41,3 +41,16 @@ export function forwardHeaders(req: Request, skipExtra: string): Headers {
   }
   return out;
 }
+
+const ASSET_SUFFIXES: string[] = [
+  ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif",
+  ".ico", ".woff", ".woff2", ".ttf", ".map", ".json", ".xml", ".txt", ".mp4", ".pdf",
+];
+
+export function looksLikeAsset(path: string): bool {
+  const lower = path.toLowerCase();
+  for (let i = 0; i < ASSET_SUFFIXES.length; i++) {
+    if (lower.endsWith(ASSET_SUFFIXES[i])) return true;
+  }
+  return false;
+}

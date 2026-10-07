@@ -14,6 +14,8 @@ import { constantTimeEq, hmacSha256, jwtVerifyHs256, sha256 } from './crypto.mjs
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 const DEC16 = new TextDecoder('utf-16le');
+// The real host caps concurrency, not count; this only stops a runaway worker looping the devkit.
+const MAX_FETCHES_PER_PHASE = 16;
 
 // ---------- msgpack (subset the SDK uses) ----------
 
@@ -189,15 +191,14 @@ export class EdgeWorkerHost {
                         body: bodyLen > 0 ? h.readUtf8(bodyPtr, bodyLen) : null,
                     };
 
-                    if (h.probing) {
-                        h.pendingFetches.push({ call });
-                        // Probe pass: a benign error makes the worker bail out early rather
-                        // than act on invented data.
+                    const slot = h.replayQueue.shift();
+                    if (!slot) {
+                        // Not resolved yet. Record the first such call; a benign error makes the
+                        // worker bail out rather than act on invented data, and the pass reruns.
+                        if (h.pendingFetches.length === 0) h.pendingFetches.push({ call });
                         return h.packFetchResult(
                             new Writer().array(4).uint(0).pairs([]).str('transport').str('probe').done(), null);
                     }
-                    const slot = h.replayQueue.shift();
-                    if (!slot) throw new Error('fetch replay queue exhausted (nondeterministic worker?)');
                     h.log.push({ type: 'fetch', call, result: slot.result });
                     const res = slot.result;
                     if (res.errorKind) {
@@ -367,42 +368,37 @@ export class EdgeWorkerHost {
 
     /**
      * Runs a phase. fetch() is synchronous inside wasm but our fetchHandler is async,
-     * so the phase runs twice: a probe pass records the calls, then a replay pass runs
-     * with resolved results.
+     * so the phase reruns once per fetch: each pass replays the results resolved so far
+     * and stops at the first unresolved call. That covers fetches that depend on an
+     * earlier one's response, like posting a fetched page on to an API.
      */
     async runPhase(exportName, meta, body, setup, phase) {
         this.phase = phase;
-        this.pendingFetches = [];
-        this.probing = true;
 
-        // The probe pass really executes the worker, so any host-side writes it makes
-        // would be applied twice. Snapshot the stores and roll back before the replay
-        // pass, so stateful calls land exactly once.
+        // Every pass really executes the worker, so host-side writes from the earlier
+        // passes are rolled back and stateful calls land exactly once.
         const kvSnapshot = new Map(this.kv);
-        const limiterSnapshot = new Map(
-            [...this.limiters].map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]),
-        );
-
-        setup();
-        this.resetArena();
-        this.ex[exportName](this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
-        this.probing = false;
-
-        this.kv = kvSnapshot;
-        this.limiters = limiterSnapshot;
+        const limiterSnapshot = [...this.limiters].map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]);
 
         const resolved = [];
-        for (const pending of this.pendingFetches) {
-            resolved.push({ result: await this.fetchHandler(pending.call) });
-        }
+        for (let pass = 0; pass <= MAX_FETCHES_PER_PHASE; pass++) {
+            this.kv = new Map(kvSnapshot);
+            this.limiters = new Map(limiterSnapshot.map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]));
+            this.replayQueue = [...resolved];
+            this.pendingFetches = [];
 
-        this.replayQueue = resolved;
-        setup();
-        this.resetArena();
-        const out = this.ex[exportName](
-            this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
-        if (this.replayQueue.length) throw new Error('worker made fewer fetches on replay');
-        return this.readOutputStruct(out);
+            setup();
+            this.resetArena();
+            const out = this.ex[exportName](
+                this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
+
+            if (this.pendingFetches.length === 0) {
+                if (this.replayQueue.length) throw new Error('worker made fewer fetches on replay');
+                return this.readOutputStruct(out);
+            }
+            resolved.push({ result: await this.fetchHandler(this.pendingFetches[0].call) });
+        }
+        throw new Error(`worker made more than ${MAX_FETCHES_PER_PHASE} fetches in one phase`);
     }
 
     async clientRequest({ method = 'GET', url = '/', headers = [], body = null }) {

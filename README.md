@@ -30,6 +30,7 @@ npm run hello         # playground with the minimal example instead
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
 | [`mos-proxy`](mos-proxy)                       | 121 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 231 assertions. |
+| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 105 KB worker. Fetches the page itself, MOS rewrites it, served with `respondWith`, 39 assertions. |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
 
@@ -230,10 +231,10 @@ they do not replace a real-host probe for peak allocation or buffered-body behav
 `test:live` needs Chrome; set `CHROME_PATH` if it isn't found automatically.
 
 One wrinkle worth knowing if you write your own harness: `fetch()` is synchronous inside
-wasm, but a realistic `fetchHandler` is async. `host.mjs` runs each phase twice — a probe
-pass that records the calls, then a replay pass with resolved results. That works when a
-worker's fetch count doesn't depend on responses; a worker that branches on a response
-body would need a different approach.
+wasm, but a realistic `fetchHandler` is async. `host.mjs` reruns the phase once per fetch:
+each pass replays the results resolved so far, and the first unresolved call gets a benign
+error, is recorded, resolved, and the pass reruns. So a fetch can depend on an earlier
+one's response, as in `mos-proxy-whole-body`, which posts the page it fetched to MOS.
 
 ## Layout
 
@@ -252,6 +253,7 @@ devkit/crypto.mjs        sync SHA-256/HMAC/JWT backing the crypto host calls
 examples/hello/          minimal worker
 examples/crypto/         host-executed HMAC and JWT
 mos-proxy/               the worker this devkit was built for
+mos-proxy-whole-body/    the same proxy with MOS rewriting the whole page
 examples/conformance/    probe worker for validating the host
 examples/wire/           wire-format conformance against the SDK's codec
 ```
