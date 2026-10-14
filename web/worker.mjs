@@ -97,15 +97,12 @@ async function run(input) {
         body: input.request.body || null,
     });
 
-    const planHeader = phase1.shortCircuited ? null : phase1.headers.get('x-mos-plan');
-
     if (phase1.shortCircuited) {
         return {
             outcome: 'short-circuited',
             mode: trace.mode,
             reachedOrigin: false,
             mosCalls: trace.mosCalls,
-            planHeader: null,
             rules: [],
             final: {
                 status: phase1.status,
@@ -122,20 +119,22 @@ async function run(input) {
         body: phase1.body,
     };
 
-    const phase2 = await host.originResponse({
+    // The page as VIP serves it, from cache or origin, goes through onClientResponse.
+    const phase2 = await host.clientResponse({
         status: input.origin.status,
         headers: input.origin.headers,
-        snapshot: originReq,
+        body: input.origin.body,
+        snapshot: { method: input.request.method, url: input.request.url, headers: input.request.headers },
     });
 
-    const html = await applyHtmlRules(input.origin.body, phase2.rules);
+    const replaced = phase2.body != null && phase2.body !== input.origin.body;
+    const html = await applyHtmlRules(phase2.body ?? input.origin.body, phase2.rules);
 
     return {
-        outcome: phase2.rules.length > 0 ? 'rewritten' : 'passed through',
+        outcome: replaced ? 'replaced' : phase2.rules.length > 0 ? 'rewritten' : 'passed through',
         mode: trace.mode,
         reachedOrigin: true,
         mosCalls: trace.mosCalls,
-        planHeader,
         originRequest: {
             method: originReq.method,
             url: originReq.url,

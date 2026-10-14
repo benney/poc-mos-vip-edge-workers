@@ -29,8 +29,8 @@ npm run hello         # playground with the minimal example instead
 | [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | 121 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 231 assertions. |
-| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 105 KB worker. Fetches the page itself, MOS rewrites it, served with `respondWith`, 39 assertions. |
+| [`mos-proxy`](mos-proxy)                       | 112 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 233 assertions. |
+| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 108 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
 
@@ -76,15 +76,16 @@ host call.
 
 ## Undocumented behaviour
 
-**`fetch()` is client-request phase only.** Any other phase returns
-`errorKind: "phase_not_allowed"`. If your worker needs a network call whose result
-depends on the origin response, it cannot happen — there is no phase that has both.
+**`fetch()` works in every phase.** Until 2026-10-13 it was client-request only and any
+other phase returned `errorKind: "phase_not_allowed"`. The host lifted that; the change is
+on the SDK's `main` branch, not yet in an npm release. A call can now depend on the
+response, which is what lets both MOS workers decide in `onClientResponse`, after the cache.
 
 **`onOriginResponse` is the only phase that can read a header you set.**
 `resp.request` in `onClientResponse` is the request as it _arrived_, pre-mutation, so a
 header set in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is
 taken at the origin socket and does include it. That asymmetry is the only channel
-between phases, and it is what makes a decide-then-rewrite pipeline possible at all.
+between phases.
 
 **`HtmlRules` is write-only.** It can insert, replace, remove and set attributes, but it
 cannot read. There is no way to get the value of a `<meta>` tag into your worker. There
@@ -188,6 +189,8 @@ Not verifiable locally:
 - What the host does with an aborted instance. AssemblyScript has no `try`/`catch`, so a
   throw from `install()` aborts — whether that becomes a 500 or fails open is unknown.
 - Cache behaviour, and whether `onOriginResponse` really only runs on a cache miss.
+- Whether `setBodyText` in `onClientResponse` replaces the page without the
+  `client_response_body` marker. The devkit assumes it does.
 - Which selectors the host's lol-html build accepts. This repo pins
   `html-rewriter-wasm@0.4.1`; the host's version may differ.
 
@@ -234,7 +237,7 @@ One wrinkle worth knowing if you write your own harness: `fetch()` is synchronou
 wasm, but a realistic `fetchHandler` is async. `host.mjs` reruns the phase once per fetch:
 each pass replays the results resolved so far, and the first unresolved call gets a benign
 error, is recorded, resolved, and the pass reruns. So a fetch can depend on an earlier
-one's response, as in `mos-proxy-whole-body`, which posts the page it fetched to MOS.
+one's response.
 
 ## Layout
 

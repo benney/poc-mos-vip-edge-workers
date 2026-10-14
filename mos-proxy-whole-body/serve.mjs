@@ -1,9 +1,11 @@
-// Serves the compiled whole-body worker over HTTP with real fetches, as the edge would.
-// Without MOS_ORIGIN_URL it also starts a demo article origin and points the worker at it.
+// Serves the compiled whole-body worker over HTTP with real fetches, as the edge would:
+// onClientRequest, an in-memory cache, the origin on a miss, then onClientResponse.
+// Without ORIGIN_URL it also starts a demo article origin and uses that.
 //
 //   MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=news MOS_SECRET_KEY=sk_... node mos-proxy-whole-body/serve.mjs
 //
 // EDGE_PORT (default 4700) is the site; ORIGIN_PORT (default 4701) is the demo origin.
+// CACHE_TTL_MS (default 60000) is how long a page stays cached.
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { EdgeWorkerHost } from '../devkit/host.mjs';
@@ -57,10 +59,13 @@ const send = (res, status, headers, body) => {
     res.end(body ?? undefined);
 };
 
-const originUrl = process.env.MOS_ORIGIN_URL ?? `http://localhost:${ORIGIN_PORT}`;
-const env = { ...process.env, MOS_ORIGIN_URL: originUrl };
+const originUrl = process.env.ORIGIN_URL ?? `http://localhost:${ORIGIN_PORT}`;
+const env = process.env;
+const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS ?? 60_000);
+// Keyed by URL and Accept-Encoding; the origin's own Cache-Control is ignored, as a CDN override would.
+const cache = new Map();
 
-if (!process.env.MOS_ORIGIN_URL) {
+if (!process.env.ORIGIN_URL) {
     createServer((req, res) => {
         if (req.url === '/' || req.url.startsWith('/story')) {
             return send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }, ARTICLE);
@@ -77,22 +82,32 @@ createServer(async (req, res) => {
     const host = await new EdgeWorkerHost(WASM, { env, fetchHandler: realFetch }).init();
     const out = await host.clientRequest({ method: req.method, url: req.url, headers, body });
 
+    let served;
     if (out.shortCircuited) {
-        const h = {};
-        for (const [n, v] of out.headers.entries()) (h[n] ??= []).push(v);
-        send(res, out.status, h, out.body);
+        served = { status: out.status, headers: out.headers.entries(), body: out.body, how: 'short-circuit' };
     } else {
-        // Pass-through: VIP's own origin path.
-        const upstream = await realFetch({ method: out.method, url: originUrl + out.url, headers: out.headers.entries(), body: out.body });
-        if (upstream.errorKind) return send(res, 502, { 'content-type': 'text/plain' }, upstream.errorMessage);
-        const h = {};
-        for (const [n, v] of upstream.headers) if (n !== 'content-length' && n !== 'content-encoding') (h[n] ??= []).push(v);
-        send(res, upstream.status, h, upstream.body);
+        const key = `${out.url}|${out.headers.get('accept-encoding') ?? ''}`;
+        const hit = req.method === 'GET' ? cache.get(key) : undefined;
+        let stored = hit && hit.expires > Date.now() ? hit.response : undefined;
+        const how = stored ? 'cache HIT' : 'cache MISS';
+        if (!stored) {
+            const upstream = await realFetch({ method: out.method, url: originUrl + out.url, headers: out.headers.entries(), body: out.body });
+            if (upstream.errorKind) return send(res, 502, { 'content-type': 'text/plain' }, upstream.errorMessage);
+            stored = { ...upstream, headers: upstream.headers.filter(([n]) => n !== 'content-length' && n !== 'content-encoding') };
+            if (req.method === 'GET' && stored.status === 200) cache.set(key, { response: stored, expires: Date.now() + CACHE_TTL_MS });
+        }
+        const final = await host.clientResponse({ status: stored.status, headers: stored.headers, body: stored.body, snapshot: { method: req.method, url: req.url, headers } });
+        served = { status: final.status, headers: final.headers.entries(), body: final.body, how };
     }
+
+    const h = {};
+    for (const [n, v] of served.headers) if (n !== 'content-length') (h[n] ??= []).push(v);
+    send(res, served.status, h, served.body);
+
     // The devkit reruns a phase once per fetch, so earlier fetches appear once per rerun.
     const fetches = [...new Map(host.log.filter((e) => e.type === 'fetch').map((e) => [`${e.call.method} ${e.call.url}`, e.result])).entries()].map(
         ([call, r]) => `${call} -> ${r.status ?? r.errorKind}${r.status >= 400 ? ` ${String(r.body).slice(0, 200)}` : ''}`,
     );
-    console.log(`${req.method} ${req.url} ${out.shortCircuited ? out.status : 'pass-through'} ${(performance.now() - started).toFixed(0)}ms`);
+    console.log(`${req.method} ${req.url} ${served.status} ${served.how} ${(performance.now() - started).toFixed(0)}ms`);
     for (const f of fetches) console.log(`    ${f}`);
-}).listen(EDGE_PORT, () => console.log(`edge    http://localhost:${EDGE_PORT}  (MOS ${env.MOS_HOST ?? 'unset'})`));
+}).listen(EDGE_PORT, () => console.log(`edge    http://localhost:${EDGE_PORT}  (MOS ${env.MOS_HOST ?? 'unset'}, origin ${originUrl})`));

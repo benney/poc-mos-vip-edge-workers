@@ -1,5 +1,6 @@
 // A runtime-neutral implementation of the VIP edge-worker host ABI, enough to drive
-// the real compiled release.wasm through onClientRequest -> origin -> onOriginResponse.
+// the real compiled release.wasm through onClientRequest -> origin -> onOriginResponse,
+// then onClientResponse.
 // No Node built-ins: runs in Node, a browser, or a Web Worker.
 //
 // Wire formats (from the SDK's msgpack.ts header):
@@ -176,12 +177,7 @@ export class EdgeWorkerHost {
                     return h.packedStr(h.env[name]);
                 },
                 fetch(metaPtr, metaLen, bodyPtr, bodyLen) {
-                    // The host allows fetch() only in the client-request phase; any
-                    // other phase gets errorKind "phase_not_allowed".
-                    if (h.phase !== 'client-request') {
-                        return h.packFetchResult(new Writer().array(4).uint(0).pairs([])
-                            .str('phase_not_allowed').str(`fetch() is not available in the ${h.phase} phase`).done(), null);
-                    }
+                    // The host allows fetch() in every phase (SDK main, 2026-10-13).
                     const r = new Reader(new Uint8Array(h.mem, metaPtr, metaLen));
                     r.array();
                     const call = {
@@ -440,5 +436,29 @@ export class EdgeWorkerHost {
         const r = new Reader(new Uint8Array(this.mem, out.metaPtr, out.metaLen));
         r.array();
         return { status: r.uint(), headers: this.live, rules: this.htmlRules };
+    }
+
+    /**
+     * Runs onClientResponse on a response from the cache or the origin. `snapshot` is the
+     * request before onClientRequest mutated it. The body goes in only when the worker exports
+     * client_response_body; whatever body the worker leaves is returned.
+     */
+    async clientResponse({ status, headers = [], body = null, snapshot }) {
+        const buffered = typeof this.ex.client_response_body === 'function';
+        const meta = new Writer().array(1).uint(status).done();
+        const out = await this.runPhase('on_client_response', meta, buffered && body != null ? ENC.encode(body) : null, () => {
+            this.live = new HeaderMap(headers);
+            this.snapshot = { method: snapshot.method, url: snapshot.url, headers: snapshot.headers instanceof HeaderMap ? snapshot.headers : new HeaderMap(snapshot.headers) };
+            this.responded = { sent: false, status: 0, headers: new HeaderMap(), body: null };
+            this.htmlRules = [];
+        }, 'client-response');
+        const r = new Reader(new Uint8Array(this.mem, out.metaPtr, out.metaLen));
+        r.array();
+        return {
+            status: r.uint(),
+            headers: this.live,
+            rules: this.htmlRules,
+            body: out.bodyLen > 0 ? this.readUtf8(out.bodyPtr, out.bodyLen) : body,
+        };
     }
 }

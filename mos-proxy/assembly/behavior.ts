@@ -1,6 +1,5 @@
-// Compiles surfaceBehavior.http into ops. Header/status changes apply in the response
-// phase; a `body` key means returnImmediately, which we serve from the request
-// phase via respondWith so no origin_response_body buffering is needed.
+// Compiles surfaceBehavior.http into ops for the response phase. A `body` key means
+// returnImmediately: the body replaces the page and components are skipped.
 import { JSON } from "json-as";
 import { NameValue } from "./decisions";
 

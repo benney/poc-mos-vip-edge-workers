@@ -1,18 +1,15 @@
-// Compiles surface decisions into a compact rule IR (carried across phases in a
-// request header), and replays that IR as declarative HtmlRules.
+// Compiles surface decisions into a compact rule IR and replays it as declarative
+// HtmlRules.
 import { JSON } from "json-as";
-import { HtmlRules } from "@automattic/vip-edge-workers-sdk/assembly/index";
-import { Headers, Response, ResponseInit } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { Headers, HtmlRules } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { Config } from "./config";
 import { SurfaceDecisions, WebElement } from "./decisions";
-import { compileHttpBehavior, HttpOps, statusAllowsBody } from "./behavior";
+import { compileHttpBehavior, HttpOps } from "./behavior";
 
 // Host caps: 256 rules / 64 KiB per install(). install() throws (= abort in AS),
 // so we stay under budget ourselves rather than catching.
 const MAX_RULES: i32 = 200;
 const MAX_PAYLOAD: i32 = 56 * 1024;
-
-export const PLAN_HEADER: string = "x-mos-plan";
 
 @json
 export class EdgeRule {
@@ -138,10 +135,6 @@ export function serializePlan(plan: EdgePlan): string {
   return JSON.stringify(plan);
 }
 
-export function planIsEmpty(plan: EdgePlan): bool {
-  return plan.r.length == 0 && plan.a.length == 0 && plan.h === null;
-}
-
 /** Applies ops in order: replace-all, cookie reset, set, delete, append. */
 export function applyHttpOps(ops: HttpOps, headers: Headers): i32 {
   if (ops.hrep) {
@@ -153,32 +146,6 @@ export function applyHttpOps(ops: HttpOps, headers: Headers): i32 {
   for (let i = 0; i < ops.hdel.length; i++) headers.delete(ops.hdel[i]);
   for (let i = 0; i < ops.ck.length; i++) headers.append("set-cookie", ops.ck[i]);
   return ops.st;
-}
-
-/**
- * Builds the returnImmediately response for a `body` override. Served from the
- * request phase, so there are no origin headers to modify — only ops.hset applies.
- */
-export function buildImmediateResponse(decisions: SurfaceDecisions): Response | null {
-  const behavior = compileHttpBehavior(decisions.surfaceBehavior.http);
-  if (behavior === null || !behavior.hasBody) return null;
-
-  const headers = new Headers();
-  const ops = behavior.ops;
-  for (let i = 0; i < ops.hset.length; i++) headers.set(ops.hset[i].name, ops.hset[i].value);
-  for (let i = 0; i < ops.ck.length; i++) headers.append("set-cookie", ops.ck[i]);
-
-  // Origin status is unknown at request time, so an un-overridden status is 200.
-  const status = ops.st != 0 ? ops.st : 200;
-  const init = new ResponseInit();
-  init.status = <u16>status;
-  init.headers = headers;
-
-  const body = statusAllowsBody(status) && behavior.body.length > 0
-    ? Uint8Array.wrap(String.UTF8.encode(behavior.body))
-    : null;
-
-  return new Response(body, init);
 }
 
 export function parsePlan(planJson: string): EdgePlan {

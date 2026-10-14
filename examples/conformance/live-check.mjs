@@ -7,6 +7,8 @@ if (!base) {
 const routes = [
     '/__probe/snapshot',
     '/__probe/fetch-origin-phase',
+    '/__probe/fetch-client-response-phase',
+    '/__probe/set-body-client-response',
     '/__probe/rules-in-request-phase',
     '/__probe/kv',
     '/__probe/body-marker',

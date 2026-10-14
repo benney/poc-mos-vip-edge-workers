@@ -1,5 +1,6 @@
 // URL/header helpers. No URL class in AS — req.url is already origin-relative.
 import { Headers, Request } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { Config } from "./config";
 
 // Set by the host on the outgoing request; forwarding stale copies breaks the body.
 const HOP_HEADERS: string[] = ["host", "content-length", "transfer-encoding", "connection", "keep-alive", "upgrade"];
@@ -53,4 +54,20 @@ export function looksLikeAsset(path: string): bool {
     if (lower.endsWith(ASSET_SUFFIXES[i])) return true;
   }
   return false;
+}
+
+/** A GET for a page, not an asset or an ignored path: the only requests that get decisions. */
+export function isPageRequest(cfg: Config, req: Request): bool {
+  if (req.method != "GET") return false;
+  const path = pathOf(req.url);
+  if (looksLikeAsset(path)) return false;
+  for (let i = 0; i < cfg.ignorePrefixes.length; i++) {
+    if (path.startsWith(cfg.ignorePrefixes[i])) return false;
+  }
+  return true;
+}
+
+export function isHtml(headers: Headers): bool {
+  const contentType = headers.get("content-type");
+  return contentType !== null && contentType.toLowerCase().startsWith("text/html");
 }

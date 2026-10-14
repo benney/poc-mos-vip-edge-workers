@@ -30,13 +30,22 @@ async function probe(path, { env = ENV, selector = null } = {}) {
         headers: [['content-type', 'text/html; charset=utf-8']],
         snapshot: req,
     });
+    const html = await applyHtmlRules(HTML, res.rules);
+    const client = await host.clientResponse({
+        status: res.status,
+        headers: res.headers.entries(),
+        body: html,
+        snapshot: { method: 'GET', url: path, headers: [['host', 'probe.test']] },
+    });
     return {
         shortCircuited: false,
         status: res.status,
         headers: res.headers,
         rules: res.rules,
-        html: await applyHtmlRules(HTML, res.rules),
+        html,
         requestHeadersSentToOrigin: req.headers,
+        clientHeaders: client.headers,
+        clientBody: client.body,
     };
 }
 
@@ -53,12 +62,10 @@ console.log('\ncross-phase request snapshot');
     record('origin-phase sees request-phase mark', r.headers.get('x-probe-origin-phase-sees-mark'));
     record('origin-phase snapshot url', r.headers.get('x-probe-origin-phase-url'));
     record('mark reached origin', r.requestHeadersSentToOrigin.get('x-probe-mark') ?? 'no');
-    // onClientResponse is a separate phase the devkit does not drive; the deployed
-    // worker will fill this in.
-    record('client-phase sees request-phase mark', '(deploy to observe)', false);
+    record('client-phase sees request-phase mark', r.clientHeaders.get('x-probe-client-phase-sees-mark'));
 }
 
-console.log('\nfetch() phase gating');
+console.log('\nfetch() in each phase');
 {
     const r = await probe('/__probe/fetch-client-phase');
     record('client-request phase: isError', JSON.parse(JSON.stringify(parseKv(r.body).isError ?? '?')));
@@ -67,6 +74,17 @@ console.log('\nfetch() phase gating');
     const o = await probe('/__probe/fetch-origin-phase');
     record('origin-response phase: isError', o.headers.get('x-probe-origin-fetch-iserror') ?? '(absent)');
     record('origin-response phase: errorKind', o.headers.get('x-probe-origin-fetch-errorkind') ?? '(absent)');
+
+    const c = await probe('/__probe/fetch-client-response-phase');
+    record('client-response phase: isError', c.clientHeaders.get('x-probe-client-response-fetch-iserror') ?? '(absent)');
+    record('client-response phase: status', c.clientHeaders.get('x-probe-client-response-fetch-status') ?? '(absent)');
+}
+
+console.log('\nsetBodyText in onClientResponse without the body marker');
+{
+    const r = await probe('/__probe/set-body-client-response');
+    // The devkit assumes the host honours it; only a deploy can say.
+    record('page replaced', r.clientBody === 'PROBE-REPLACED-BODY' ? 'yes' : 'no', false);
 }
 
 console.log('\nHtmlRules registered in a request phase');

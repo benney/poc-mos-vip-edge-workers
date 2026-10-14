@@ -79,7 +79,7 @@ export const PRESETS = {
     },
 
     'Paywall hard block': {
-        note: 'surfaceBehavior.http carries a `body`, which means returnImmediately — the worker responds in the request phase and origin is never contacted.',
+        note: 'surfaceBehavior.http carries a `body`, which means returnImmediately: the body replaces the cached page and components are skipped.',
         env: ENV,
         request: req({ url: '/2026/premium-scoop' }),
         origin: origin(),
@@ -97,7 +97,7 @@ export const PRESETS = {
     },
 
     'Header + status only': {
-        note: 'surfaceBehavior.http with no `body`, so it applies to the origin response: status override, header add/remove, extra cookie — and HTML rewriting still runs.',
+        note: 'surfaceBehavior.http with no `body`, so it applies to the page response: status override, header add/remove, extra cookie, and HTML rewriting still runs.',
         env: ENV,
         request: req(),
         origin: origin(),
@@ -156,7 +156,7 @@ export const PRESETS = {
     },
 
     'Fail open (API down)': {
-        note: 'The decisions call fails. The worker sets no plan header, so origin HTML is served untouched and no cookie is set.',
+        note: 'The decisions call fails, so the page is served as cached, untouched and with no cookie.',
         env: ENV,
         request: req(),
         origin: origin(),

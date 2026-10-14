@@ -58,8 +58,8 @@ onClientRequest((req: Request): void => {
     return; // fall through to origin; the response phases report what they saw
   }
 
-  // Documented: fetch() is client-request phase only. Confirm it works here, then
-  // /fetch-origin-phase confirms it is refused later.
+  // fetch() is allowed in every phase since SDK main 2026-10-13. These three probes
+  // confirm the host agrees in each phase the MOS workers use.
   if (probe.startsWith("fetch-client-phase")) {
     const target = getenv("PROBE_FETCH_URL");
     const resp = fetch(target === null ? "https://example.com/" : target);
@@ -95,8 +95,10 @@ onClientRequest((req: Request): void => {
     return; // installed in onOriginResponse, where rules are effective
   }
 
-  // Must reach origin so onOriginResponse can run its half of the probe.
+  // Must reach origin (or the cache) so the response phases can run their half of the probe.
   if (probe.startsWith("fetch-origin-phase")) return;
+  if (probe.startsWith("fetch-client-response-phase")) return;
+  if (probe.startsWith("set-body-client-response")) return;
 
   if (probe.startsWith("body-marker")) {
     const body = req.text();
@@ -109,7 +111,9 @@ onClientRequest((req: Request): void => {
     "VIP edge worker conformance probe\n\n"
     + "/__probe/snapshot                cross-phase request snapshot visibility\n"
     + "/__probe/fetch-client-phase      fetch() in the allowed phase\n"
-    + "/__probe/fetch-origin-phase      fetch() in a disallowed phase\n"
+    + "/__probe/fetch-origin-phase      fetch() in onOriginResponse\n"
+    + "/__probe/fetch-client-response-phase  fetch() in onClientResponse\n"
+    + "/__probe/set-body-client-response setBodyText in onClientResponse without the body marker\n"
     + "/__probe/rules-in-request-phase  are request-phase rules dropped?\n"
     + "/__probe/selector                install PROBE_SELECTOR (one per request)\n"
     + "/__probe/kv                      KV bytes + counter round-trip\n"
@@ -150,7 +154,25 @@ onOriginResponse((resp: Response): void => {
 onClientResponse((resp: Response): void => {
   const req = resp.request;
   if (!req.url.startsWith(PROBE)) return;
-  if (!req.url.slice(PROBE.length).startsWith("snapshot")) return;
+  const probe = req.url.slice(PROBE.length);
+
+  if (probe.startsWith("fetch-client-response-phase")) {
+    const target = getenv("PROBE_FETCH_URL");
+    const out = fetch(target === null ? "https://example.com/" : target);
+    resp.headers.set("x-probe-client-response-fetch-iserror", out.isError() ? "true" : "false");
+    resp.headers.set("x-probe-client-response-fetch-errorkind", out.errorKind === null ? "(null)" : out.errorKind!);
+    resp.headers.set("x-probe-client-response-fetch-status", out.status.toString());
+    return;
+  }
+
+  // The streaming MOS worker replaces the page this way for a workflow's own body. The
+  // body marker is not exported, so this asks whether the host honours it anyway.
+  if (probe.startsWith("set-body-client-response")) {
+    resp.setBodyText("PROBE-REPLACED-BODY");
+    return;
+  }
+
+  if (!probe.startsWith("snapshot")) return;
 
   // Documented: this snapshot predates request-phase mutations, so the mark
   // should NOT be visible here.

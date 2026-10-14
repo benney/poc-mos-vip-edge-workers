@@ -66,7 +66,7 @@ export class SurfaceDecisions {
 
 @json
 export class ProxyOrigin {
-  // Unknown at client-request time unless the worker fetched the origin itself.
+  // The cached or origin status; the response phase knows it.
   status: i32 = 0;
   // Whole-body mode only: MOS applies componentBehaviors to this page and returns it
   // in surfaceBehavior.http.body.

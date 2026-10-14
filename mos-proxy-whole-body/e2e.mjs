@@ -1,6 +1,6 @@
 // End-to-end: real compiled whole-body worker + Node host + fake MOS API + fake WordPress
-// origin. Everything happens in onClientRequest, so every page view is a short-circuit
-// and the assertions are against the response the worker hands back.
+// origin. Pages come from the modelled edge cache or the origin, and the worker transforms
+// them in onClientResponse, so assertions are against the response the reader gets.
 import { readFileSync } from 'node:fs';
 import { EdgeWorkerHost } from '../devkit/host.mjs';
 
@@ -34,17 +34,16 @@ const decisions = (over = {}) => ({
     ...over,
 });
 
-/** Fake WordPress: HTML for pages, a redirect, and a gzip page it ignores identity for. */
+/** Fake WordPress, reached by VIP on a cache miss: HTML pages, a redirect, a feed and a gzip page. */
 function wordpress(state, { url, headers }) {
     state.originCalls.push({ url, headers });
-    if (state.originFail) return { errorKind: 'timeout', errorMessage: 'origin slow' };
-    const path = url.replace(SITE, '').replace('https://origin.site.test', '');
-    if (path === '/old') return { status: 301, headers: [['location', '/story']], body: '' };
-    if (path === '/feed') return { status: 200, headers: [['content-type', 'application/rss+xml']], body: '<rss/>' };
-    if (path === '/gz') return { status: 200, headers: [['content-type', 'text/html'], ['content-encoding', 'gzip']], body: 'binary' };
+    if (url === '/old') return { status: 301, headers: [['location', '/story']], body: '' };
+    if (url === '/feed') return { status: 200, headers: [['content-type', 'application/rss+xml']], body: '<rss/>' };
+    if (url === '/gz') return { status: 200, headers: [['content-type', 'text/html'], ['content-encoding', 'gzip']], body: 'binary' };
+    if (url.endsWith('.css')) return { status: 200, headers: [['content-type', 'text/css']], body: 'body{}' };
     return {
         status: state.originStatus ?? 200,
-        headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/'], ['content-length', '999']],
+        headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/']],
         body: state.originHtml ?? ORIGIN_HTML,
     };
 }
@@ -62,12 +61,39 @@ function mos(state, { method, url, headers, body }) {
     return { status: 404, headers: [], body: '{}' };
 }
 
+/**
+ * One request: client request, then the edge cache (keyed by URL and Accept-Encoding, as
+ * an origin sending Vary: Accept-Encoding would have it), WordPress on a miss, then the
+ * client response. The worker's own fetches may only go to MOS.
+ */
 async function request(state, { method = 'GET', url = '/story', headers = [['host', 'site.test']], body = null } = {}) {
     const host = await new EdgeWorkerHost(WASM, {
         env: state.env ?? ENV,
-        fetchHandler: async (call) => (call.url.startsWith('https://api.mos.test') ? mos(state, call) : wordpress(state, call)),
+        fetchHandler: async (call) => {
+            if (call.url.startsWith('https://api.mos.test')) return mos(state, call);
+            state.otherFetches.push(call.url);
+            return { errorKind: 'transport', errorMessage: 'unexpected fetch' };
+        },
     }).init();
-    return host.clientRequest({ method, url, headers, body });
+
+    const phase1 = await host.clientRequest({ method, url, headers, body });
+    if (phase1.shortCircuited) return { ...phase1, hitOrigin: false };
+
+    const key = `${phase1.url}|${phase1.headers.get('accept-encoding') ?? ''}`;
+    let stored = method === 'GET' ? state.cache.get(key) : undefined;
+    const hitOrigin = stored === undefined;
+    if (hitOrigin) {
+        stored = wordpress(state, { url: phase1.url, headers: phase1.headers });
+        if (method === 'GET') state.cache.set(key, stored);
+    }
+
+    const phase2 = await host.clientResponse({
+        status: stored.status,
+        headers: stored.headers,
+        body: stored.body,
+        snapshot: { method, url, headers },
+    });
+    return { shortCircuited: false, status: phase2.status, headers: phase2.headers, body: phase2.body, hitOrigin };
 }
 
 // Fetch calls carry header pairs; responses come back as the devkit's HeaderMap.
@@ -86,21 +112,21 @@ const section = (s) => console.log(`\n${s}`);
 const fresh = (over = {}) => ({
     originCalls: [],
     mosCalls: [],
+    otherFetches: [],
+    cache: new Map(),
     respond: () => decisions({ surfaceBehavior: { http: { body: PAYWALLED_HTML } } }),
     ...over,
 });
 
-section('page view: origin page goes to MOS, transformed page comes back');
+section('page view: the served page goes to MOS, transformed page comes back');
 {
     const state = fresh();
     const res = await request(state, { headers: [['host', 'site.test'], ['cookie', 'wordpress_logged_in=u1'], ['user-agent', 'UA'], ['accept-encoding', 'gzip, br']] });
 
-    ok('short-circuited from the request phase', res.shortCircuited);
-    eq('one origin fetch, then one MOS call', [state.originCalls.length, state.mosCalls.length], [1, 1]);
-    eq('fetched its own host', state.originCalls[0].url, `${SITE}/story`);
-    eq('forwarded the WordPress cookie', header(state.originCalls[0].headers, 'cookie'), ['wordpress_logged_in=u1']);
+    eq('VIP fetched the origin once, then one MOS call', [state.originCalls.length, state.mosCalls.length], [1, 1]);
+    eq('the worker fetched nothing but MOS', state.otherFetches, []);
+    eq('WordPress cookie reached the origin', header(state.originCalls[0].headers, 'cookie'), ['wordpress_logged_in=u1']);
     eq('asked origin for an uncompressed page', header(state.originCalls[0].headers, 'accept-encoding'), ['identity']);
-    eq('tagged its own fetch', header(state.originCalls[0].headers, 'x-mos-origin-fetch').map((v) => v.length), [64]);
 
     const sent = JSON.parse(state.mosCalls[0].body);
     eq('sent origin status and page', [sent.http.proxyOrigin.status, sent.http.proxyOrigin.body], [200, ORIGIN_HTML]);
@@ -111,12 +137,24 @@ section('page view: origin page goes to MOS, transformed page comes back');
     eq('origin status', res.status, 200);
     eq('transformed page', res.body, PAYWALLED_HTML);
     eq('origin headers kept', [header(res.headers, 'content-type'), header(res.headers, 'etag')], [['text/html; charset=utf-8'], ['W/"abc"']]);
-    eq('stale content-length dropped', header(res.headers, 'content-length'), []);
     eq('origin cookie then anon cookie', header(res.headers, 'set-cookie'), ['wp_session=xyz; Path=/', 'mos_anon_id=anon-wb-1; Path=/']);
-    eq('not cacheable', header(res.headers, 'cache-control'), ['no-store']);
+    eq('reader copy is private', header(res.headers, 'cache-control'), ['private, no-store']);
 }
 
-section('no transformed body: origin page served with the http ops');
+section('cache: origin rendered once, every reader gets their own page');
+{
+    const state = fresh({ respond: (r) => decisions({ surfaceBehavior: { http: { body: r.http.proxyOrigin.body.replace('Free para.', `Hello ${r.identity.anonymousIdentifier}`) } } }) });
+    const a = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=reader-a']] });
+    const b = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=reader-b'], ['accept-encoding', 'br']] });
+
+    eq('origin rendered once', state.originCalls.length, 1);
+    eq('second reader served from cache', [a.hitOrigin, b.hitOrigin], [true, false]);
+    eq('MOS saw the raw page both times', state.mosCalls.map((c) => JSON.parse(c.body).http.proxyOrigin.body), [ORIGIN_HTML, ORIGIN_HTML]);
+    ok('each reader personalised', a.body.includes('Hello reader-a') && b.body.includes('Hello reader-b') && !b.body.includes('reader-a'));
+    eq('cached copy is the origin page', [...state.cache.values()].map((r) => r.body), [ORIGIN_HTML]);
+}
+
+section('no transformed body: page served with the http ops');
 {
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }], removeHeaders: ['etag'] } } }) });
     const res = await request(state);
@@ -124,7 +162,7 @@ section('no transformed body: origin page served with the http ops');
     eq('header added and removed', [header(res.headers, 'x-mos'), header(res.headers, 'etag')], [['1'], []]);
 }
 
-section("workflow's own response replaces origin's");
+section("workflow's own response replaces the page");
 {
     const state = fresh({
         respond: () => decisions({ surfaceBehavior: { http: { status: 402, headers: { 'content-type': 'text/plain' }, cookies: ['paywall=1'], body: 'Payment required' } } }),
@@ -148,60 +186,33 @@ section('fail open');
 {
     const state = fresh({ mosFail: true });
     const res = await request(state);
-    eq('MOS down: origin page, fetched once', [res.status, res.body, state.originCalls.length], [200, ORIGIN_HTML, 1]);
-
-    const down = fresh({ originFail: true });
-    const passed = await request(down);
-    ok('origin fetch failed: passes through to VIP', !passed.shortCircuited);
-    eq('no MOS call', down.mosCalls.length, 0);
+    eq('MOS down: the page as served', [res.status, res.body, header(res.headers, 'set-cookie')], [200, ORIGIN_HTML, ['wp_session=xyz; Path=/']]);
 
     const unconfigured = fresh({ env: {} });
-    ok('unconfigured: passes through', !(await request(unconfigured)).shortCircuited);
+    const passed = await request(unconfigured);
+    eq('unconfigured: no MOS call, page untouched', [unconfigured.mosCalls.length, passed.body], [0, ORIGIN_HTML]);
 }
 
-section('only uncompressed HTML goes to MOS');
+section('only uncompressed HTML pages go to MOS');
 {
-    for (const [url, status] of [['/feed', 200], ['/old', 301], ['/gz', 200]]) {
+    for (const [url, status, body] of [['/feed', 200, '<rss/>'], ['/old', 301, ''], ['/gz', 200, 'binary'], ['/wp-content/style.css', 200, 'body{}'], ['/wp-admin/', 200, ORIGIN_HTML]]) {
         const state = fresh();
         const res = await request(state, { url });
-        eq(`${url}: served as fetched, no MOS call`, [res.status, state.mosCalls.length], [status, 0]);
+        eq(`${url}: served as is, no MOS call`, [res.status, res.body, state.mosCalls.length], [status, body, 0]);
     }
-    const asset = fresh();
-    ok('asset path: passes through without fetching', !(await request(asset, { url: '/wp-content/style.css' })).shortCircuited && asset.originCalls.length === 0);
-    const ignored = fresh();
-    ok('ignored prefix: passes through', !(await request(ignored, { url: '/wp-admin/' })).shortCircuited && ignored.originCalls.length === 0);
     const post = fresh();
-    ok('POST: passes through', !(await request(post, { method: 'POST', url: '/story' })).shortCircuited);
-}
-
-section('loop guard');
-{
-    const state = fresh();
-    await request(state);
-    const token = header(state.originCalls[0].headers, 'x-mos-origin-fetch')[0];
-
-    const own = fresh();
-    const reentry = await request(own, { headers: [['host', 'site.test'], ['x-mos-origin-fetch', token]] });
-    ok('own fetch re-entering: passes through untouched', !reentry.shortCircuited && own.originCalls.length === 0 && own.mosCalls.length === 0);
-
-    const forged = fresh();
-    const res = await request(forged, { headers: [['host', 'site.test'], ['x-mos-origin-fetch', 'f'.repeat(64)]] });
-    eq('forged header: still paywalled', res.body, PAYWALLED_HTML);
-    ok('forged header not forwarded as-is', header(forged.originCalls[0].headers, 'x-mos-origin-fetch')[0] === token);
-}
-
-section('MOS_ORIGIN_URL points at the origin directly');
-{
-    const state = fresh({ env: { ...ENV, MOS_ORIGIN_URL: 'https://origin.site.test/' } });
-    await request(state, { url: '/story?x=1' });
-    eq('fetched the configured origin, query kept', state.originCalls[0].url, 'https://origin.site.test/story?x=1');
+    await request(post, { method: 'POST', url: '/story' });
+    eq('POST: no MOS call', post.mosCalls.length, 0);
+    const asset = fresh();
+    await request(asset, { url: '/wp-content/style.css', headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
+    eq('asset keeps its accept-encoding', header(asset.originCalls[0].headers, 'accept-encoding'), ['br']);
 }
 
 section('custom endpoints still route to MOS');
 {
     const state = fresh();
     const res = await request(state, { url: '/mos-endpoints/hello' });
-    eq('endpoint served, no origin fetch', [res.status, state.originCalls.length], [200, 0]);
+    eq('endpoint served from the request phase, no origin', [res.shortCircuited, res.status, state.originCalls.length], [true, 200, 0]);
 }
 
 section('a large page');
