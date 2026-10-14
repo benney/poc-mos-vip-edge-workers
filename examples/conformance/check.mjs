@@ -105,6 +105,20 @@ for (const sel of ['p', 'head script:first-of-type', 'div:last-child', 'li:nth-c
     }
 }
 
+console.log('\nRegExp (devkit: JS RegExp standing in for the host\'s Rust regex)');
+{
+    const r = await probe('/__probe/regex');
+    for (const [name, value] of Object.entries(parseKv(r.body))) record(`regex ${name}`, value);
+}
+
+console.log('\ngetRandomValues');
+{
+    const a = parseKv((await probe('/__probe/random')).body);
+    const b = parseKv((await probe('/__probe/random')).body);
+    record('16 bytes as hex', a.bytes);
+    record('differs between calls', a.value !== b.value ? 'yes' : 'no');
+}
+
 console.log('\nKV');
 {
     const r = await probe('/__probe/kv');

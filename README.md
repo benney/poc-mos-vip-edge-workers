@@ -15,7 +15,7 @@ production CDN proxy, and documents which parts of it the phase model can expres
 
 ```bash
 npm install
-npm run test:all      # 319 assertions across the examples
+npm run test:all      # 323 assertions across the examples
 npm run web           # playground at http://localhost:8787
 npm run serve         # a worker as a local edge in front of a real MOS (see scripts/serve.mjs)
 npm run hello         # playground with the minimal example instead
@@ -30,13 +30,13 @@ npm run hello         # playground with the minimal example instead
 | [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | 112 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 235 assertions. |
-| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 108 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
+| [`mos-proxy`](mos-proxy)                       | 114 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 239 assertions. |
+| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 111 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
 
-All 27 host functions the SDK declares are implemented — `header.*`, `request.*`,
-`response.*`, `env.*`, `html.*`, `kv.*` and `crypto.*`.
+All 32 host functions SDK 0.6 declares are implemented — `header.*`, `request.*`,
+`response.*`, `env.*`, `html.*`, `kv.*`, `crypto.*` and `regex.*`.
 
 ## Running a worker
 
@@ -73,7 +73,9 @@ new EdgeWorkerHost(wasm, {
 KV and rate limiters are in-memory and honour the documented caps (64 B keys, 10 KiB
 values), so an oversize write fails locally too. `crypto.*` is backed by a pure-JS
 SHA-256 rather than WebCrypto, which is async-only and cannot implement a synchronous
-host call.
+host call; `getRandomValues` is the synchronous exception. `regex.*` runs on JS `RegExp`,
+where the host runs Rust's `regex` crate: they agree on what workers write in practice, and
+the conformance probe's `/__probe/regex` is there to diff the rest.
 
 ## Undocumented behaviour
 
@@ -83,10 +85,10 @@ on the SDK's `main` branch, not yet in an npm release. A call can now depend on 
 response, which is what lets both MOS workers decide in `onClientResponse`, after the cache.
 
 **`onOriginResponse` is the only phase that can read a header you set.**
-`resp.request` in `onClientResponse` is the request as it _arrived_, pre-mutation, so a
-header set in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is
-taken at the origin socket and does include it. That asymmetry is the only channel
-between phases.
+`resp.request` in `onClientResponse` is the request as the client sent it, so a header set
+in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is taken at the
+origin socket and does include it. SDK 0.6 documents this as per-socket snapshots; before
+that it was only observable.
 
 **`HtmlRules` is write-only.** It can insert, replace, remove and set attributes, but it
 cannot read. There is no way to get the value of a `<meta>` tag into your worker. There

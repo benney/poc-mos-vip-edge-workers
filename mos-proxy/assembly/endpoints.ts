@@ -3,8 +3,8 @@
 import { JSON } from "json-as";
 import { fetch, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { AuthRoute, Config } from "./config";
-import { readCookie } from "./cookies";
-import { firstIp, forwardHeaders, pathOf, queryOf, stripLeadingSlash } from "./http";
+import { cookieValue } from "./cookies";
+import { firstIp, forwardHeaders, stripLeadingSlash } from "./http";
 import { buildIdentity, HttpPayload, IdentityPayload, mosApiHeaders, setProxyHeaders } from "./decisions";
 
 /** Envelope for authenticated routes: the client's own JSON body plus our keys. */
@@ -37,10 +37,9 @@ export function buildHttpPayload(req: Request, fullUrl: string): HttpPayload {
 }
 
 export function identityFromRequest(cfg: Config, req: Request): IdentityPayload {
-  const cookieHeader = req.headers.get("cookie");
   return buildIdentity(
-    readCookie(cookieHeader, cfg.anonCookie),
-    readCookie(cookieHeader, cfg.jwtCookie),
+    cookieValue(req.cookies, cfg.anonCookie),
+    cookieValue(req.cookies, cfg.jwtCookie),
     cfg.anonFallback,
   );
 }
@@ -56,7 +55,7 @@ export function customEndpointTarget(cfg: Config, path: string, query: string): 
 }
 
 export function handleCustomEndpoint(cfg: Config, req: Request, path: string): void {
-  const target = customEndpointTarget(cfg, path, queryOf(req.url));
+  const target = customEndpointTarget(cfg, path, req.query.length > 0 ? "?" + req.query : "");
 
   const headers = forwardHeaders(req, "");
   setProxyHeaders(headers);

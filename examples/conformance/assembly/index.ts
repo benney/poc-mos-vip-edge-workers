@@ -9,8 +9,8 @@
 // Probes are separate routes on purpose: AssemblyScript has no try/catch, so anything
 // that might throw has to be isolated to one request.
 import {
-  fetch, getenv, HtmlRules, KV, onClientRequest, onClientResponse, onOriginResponse,
-  Request, Response,
+  fetch, getenv, getRandomValues, hexEncode, HtmlRules, KV, onClientRequest, onClientResponse,
+  onOriginResponse, RegExp, Request, Response,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
 export {
@@ -77,6 +77,29 @@ onClientRequest((req: Request): void => {
     return; // if the marker appears in the page, the host applied it after all
   }
 
+  // SDK 0.6 runs RegExp on the host's Rust regex. The devkit stands in with JS RegExp,
+  // so these lines are the ones to diff against a deploy.
+  if (probe.startsWith("regex")) {
+    const post = new RegExp("^/(?<year>\\d{4})/(?<slug>[a-z0-9-]+)/?$", "i");
+    const m = post.exec("/2026/Tide-Tables/");
+    const words = new RegExp("\\b(\\w)(\\w*)", "g");
+    req.respondText(200,
+      line("exec.slug", m === null ? "(no match)" : m.group("slug")!)
+      + line("exec.year.index", m === null ? "-" : m.start(1).toString())
+      + line("test.unicode", new RegExp("^\\p{L}+$").test("Tōkyō") ? "true" : "false")
+      + line("replace.template", words.replace("tide tables", "$2$1"))
+      + line("replace.first", new RegExp("a").replace("banana", "[$&]"))
+      + line("split", new RegExp(",\\s*").split("a, b,c").join("|"))
+      + line("multibyte.index", new RegExp("b").search("ééb").toString()));
+    return;
+  }
+
+  if (probe.startsWith("random")) {
+    const bytes = getRandomValues(new Uint8Array(16));
+    req.respondText(200, line("bytes", hexEncode(bytes).length.toString()) + line("value", hexEncode(bytes)));
+    return;
+  }
+
   if (probe.startsWith("kv")) {
     KV.setText("probe-key", "stored");
     const readBack = KV.getText("probe-key");
@@ -116,6 +139,8 @@ onClientRequest((req: Request): void => {
     + "/__probe/set-body-client-response setBodyText in onClientResponse without the body marker\n"
     + "/__probe/rules-in-request-phase  are request-phase rules dropped?\n"
     + "/__probe/selector                install PROBE_SELECTOR (one per request)\n"
+    + "/__probe/regex                   RegExp on the host's regex engine\n"
+    + "/__probe/random                  getRandomValues\n"
     + "/__probe/kv                      KV bytes + counter round-trip\n"
     + "/__probe/body-marker             is req.body populated without the marker?\n"
     + "/__probe/memory-{256k..8m}       can the worker allocate and touch this size?\n");

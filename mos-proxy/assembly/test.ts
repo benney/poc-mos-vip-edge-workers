@@ -1,7 +1,8 @@
 // Test-only entrypoint: exposes the pure logic over an explicit UTF-8 ABI so a Node
 // harness asserts against the compiled AssemblyScript, not a TS re-implementation.
 import { JSON } from "json-as";
-import { readCookie } from "./cookies";
+import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { cookieValue } from "./cookies";
 import { Config } from "./config";
 import { SurfaceDecisions, buildIdentity } from "./decisions";
 import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
@@ -28,7 +29,7 @@ function setOut(s: string): void {
 }
 
 export function testReadCookie(hPtr: usize, hLen: i32, nPtr: usize, nLen: i32): void {
-  setOut(readCookie(String.UTF8.decodeUnsafe(hPtr, hLen), String.UTF8.decodeUnsafe(nPtr, nLen)));
+  setOut(cookieValue(new Cookies(String.UTF8.decodeUnsafe(hPtr, hLen)), String.UTF8.decodeUnsafe(nPtr, nLen)));
 }
 
 export function testBuildIdentity(aPtr: usize, aLen: i32, jPtr: usize, jLen: i32): void {

@@ -8,7 +8,7 @@ import { compileHttpBehavior } from "./behavior";
 import { loadConfig } from "./config";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
-import { firstIp, pathOf, wantsDecision } from "./http";
+import { firstIp, wantsDecision } from "./http";
 import { applyHttpOps, applyPlan, compilePlan } from "./rules";
 
 export {
@@ -23,7 +23,7 @@ onClientRequest((req: Request): void => {
   const cfg = loadConfig();
   if (!cfg.valid) return; // unconfigured: pass through untouched
 
-  const path = pathOf(req.url);
+  const path = req.path;
   const host = req.headers.get("host");
   const fullUrl = "https://" + (host === null ? "" : host) + req.url;
 
@@ -45,7 +45,7 @@ onClientResponse((resp: Response): void => {
   const req = resp.request;
   if (!wantsDecision(cfg, req, resp)) return;
 
-  const path = pathOf(req.url);
+  const path = req.path;
   const host = req.headers.get("host");
   const ua = req.headers.get("user-agent");
   const xff = req.headers.get("x-forwarded-for");

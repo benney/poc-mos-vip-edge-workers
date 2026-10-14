@@ -340,6 +340,13 @@ section('gating: decisions only for HTML responses, as upstream');
     await request(state, { url: '/old' });
     eq('HTML redirect: no MOS call', state.calls.length, 0);
 
+    state = fresh({ env: { ...ENV, MOS_IGNORE_PATTERNS: '^/tag/ \\.amp$' } });
+    await request(state, { url: '/tag/news' });
+    await request(state, { url: '/story.amp' });
+    eq('regex ignore patterns: no MOS call', state.calls.length, 0);
+    await request(state, { url: '/tagged-story' });
+    eq('regex ignore patterns: anchored, so /tagged-story is decided', state.calls.length, 1);
+
     state = fresh();
     await request(state, { url: '/story.json' });
     eq('HTML at an asset-looking path: decided, the path is not guessed from', state.calls.length, 1);

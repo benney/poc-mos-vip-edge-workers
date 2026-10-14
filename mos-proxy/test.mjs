@@ -280,6 +280,11 @@ eq('auth routes parsed, method upcased', cfgFields()[7],
 
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'GET /nope>/api/v1/nope, POST /ok>/api/v1/ok, garbage, POST /no-arrow, DELETE /d>/x, POST >/empty-match' });
 eq('rejects GET/DELETE and malformed entries', cfgFields()[7], 'POST /ok>/api/v1/ok');
+
+setEnv({ MOS_IGNORE_PREFIXES: '/wp-admin, /wp-login.php,', MOS_IGNORE_PATTERNS: '^/feed(/|$)   \\.amp$' });
+f = cfgFields();
+eq('ignore prefixes split on commas', f[8], '/wp-admin|/wp-login.php');
+eq('ignore patterns split on spaces', f[10], '^/feed(/|$) \\.amp$');
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST />/api/v1/root' });
 eq('root matchPath is valid', cfgFields()[7], 'POST />/api/v1/root');
 

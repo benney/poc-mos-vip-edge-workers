@@ -9,7 +9,7 @@ import { compileHttpBehavior } from "../../mos-proxy/assembly/behavior";
 import { loadConfig } from "../../mos-proxy/assembly/config";
 import { fetchDecisions, ProxyOrigin } from "../../mos-proxy/assembly/decisions";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "../../mos-proxy/assembly/endpoints";
-import { firstIp, mayBePage, pathOf, wantsDecision } from "../../mos-proxy/assembly/http";
+import { firstIp, mayBePage, wantsDecision } from "../../mos-proxy/assembly/http";
 import { applyHttpOps } from "../../mos-proxy/assembly/rules";
 
 export {
@@ -32,7 +32,7 @@ onClientRequest((req: Request): void => {
   const cfg = loadConfig();
   if (!cfg.valid) return; // unconfigured: pass through untouched
 
-  const path = pathOf(req.url);
+  const path = req.path;
   const host = req.headers.get("host");
   const fullUrl = "https://" + (host === null ? "" : host) + req.url;
 
@@ -64,7 +64,7 @@ onClientResponse((resp: Response): void => {
   origin.status = resp.status;
   origin.body = html;
 
-  const path = pathOf(req.url);
+  const path = req.path;
   const host = req.headers.get("host");
   const ua = req.headers.get("user-agent");
   const xff = req.headers.get("x-forwarded-for");

@@ -5,8 +5,8 @@ worker. This is the worker the devkit was built to test: it calls an external AP
 parses JSON, resolves identity from cookies, and rewrites HTML from the API's response.
 
 ```bash
-npm test           # 97 unit assertions
-npm run test:e2e   # 90 end-to-end assertions
+npm test           # 99 unit assertions
+npm run test:e2e   # 92 end-to-end assertions
 npm run test:web   # 26 assertions against the browser bundle
 npm run test:live  # 22 assertions against a stand-in org
 npm run web        # playground at http://localhost:8787
@@ -78,7 +78,6 @@ probe's `/__probe/set-body-client-response` checks it.
 | Page metadata in the request | `HtmlRules` is write-only, so `<meta>` tags never reach the worker without buffering the body. The whole-body worker does that. |
 | Range replacement between markers | No `onEndTag`, no position counting. |
 | Rewriting links in the body | Needs a buffered body, losing streaming and the no-size-ceiling property. |
-| Regex ignore paths | `MOS_IGNORE_PREFIXES` is prefix matching. SDK 0.6.0 adds a host-backed `RegExp`, not adopted yet. |
 
 Also worth knowing: the anonymous cookie is re-set on every request, where the original
 only sets it on mint; and every HTML page view makes one decisions call, cached or not.
@@ -97,6 +96,7 @@ missing any one makes the worker pass through untouched.
 | `MOS_ANON_FALLBACK` | `true` | `false` opts out of minting a fallback anonymous id |
 | `MOS_INJECT_SCRIPT_URL` | none | Injected into `<head>` |
 | `MOS_IGNORE_PREFIXES` | none | Comma-separated path prefixes |
+| `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 ## Live mode
