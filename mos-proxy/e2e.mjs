@@ -63,6 +63,7 @@ function makeMosApi(state) {
 function origin(req) {
     if (req.url.endsWith('.css')) return { status: 200, headers: [['content-type', 'text/css']], body: 'body{}' };
     if (req.url.startsWith('/feed')) return { status: 200, headers: [['content-type', 'application/xml']], body: '<rss/>' };
+    if (req.url === '/old') return { status: 301, headers: [['content-type', 'text/html'], ['location', '/story']], body: '<a href="/story">moved</a>' };
     return { status: 200, headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/']], body: ORIGIN_HTML };
 }
 
@@ -320,7 +321,7 @@ section('existing anon cookie is not re-set');
 
 // ---------- scenario 6: gating and fail-open ----------
 
-section('gating');
+section('gating: decisions only for HTML responses, as upstream');
 {
     let state = fresh();
     let res = await request(state, { url: '/assets/app.css' });
@@ -333,7 +334,15 @@ section('gating');
 
     state = fresh();
     await request(state, { method: 'POST', url: '/wp-comments-post.php' });
-    eq('non-GET page: no MOS call', state.calls.length, 0);
+    eq('POST answered with HTML: decided, method is not checked', state.calls.length, 1);
+
+    state = fresh();
+    await request(state, { url: '/old' });
+    eq('HTML redirect: no MOS call', state.calls.length, 0);
+
+    state = fresh();
+    await request(state, { url: '/story.json' });
+    eq('HTML at an asset-looking path: decided, the path is not guessed from', state.calls.length, 1);
 
     state = fresh();
     res = await request(state, { url: '/feed/rss' });

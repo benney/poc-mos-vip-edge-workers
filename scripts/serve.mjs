@@ -1,16 +1,20 @@
-// Serves the compiled whole-body worker over HTTP with real fetches, as the edge would:
-// onClientRequest, an in-memory cache, the origin on a miss, then onClientResponse.
+// Serves a compiled worker over HTTP with real fetches, as the edge would: onClientRequest,
+// an in-memory cache, the origin on a miss, then onClientResponse and its HtmlRules.
 // Without ORIGIN_URL it also starts a demo article origin and uses that.
 //
-//   MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=news MOS_SECRET_KEY=sk_... node mos-proxy-whole-body/serve.mjs
+//   MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=news MOS_SECRET_KEY=sk_... node scripts/serve.mjs [worker]
 //
+// worker is mos-proxy (default, streaming) or mos-proxy-whole-body; build it first.
 // EDGE_PORT (default 4700) is the site; ORIGIN_PORT (default 4701) is the demo origin.
 // CACHE_TTL_MS (default 60000) is how long a page stays cached.
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { EdgeWorkerHost } from '../devkit/host.mjs';
+import { applyHtmlRules } from '../devkit/rewrite.mjs';
+import { workerFrom } from './paths.mjs';
 
-const WASM = readFileSync(new URL('../build/mos-proxy-whole-body/release.wasm', import.meta.url));
+const WORKER = workerFrom(process.argv);
+const WASM = readFileSync(new URL(`../build/${WORKER}/release.wasm`, import.meta.url));
 const EDGE_PORT = Number(process.env.EDGE_PORT ?? 4700);
 const ORIGIN_PORT = Number(process.env.ORIGIN_PORT ?? 4701);
 
@@ -70,6 +74,9 @@ if (!process.env.ORIGIN_URL) {
         if (req.url === '/' || req.url.startsWith('/story')) {
             return send(res, 200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache' }, ARTICLE);
         }
+        // Not HTML, and an HTML redirect: neither gets a decision.
+        if (req.url === '/feed') return send(res, 200, { 'content-type': 'application/rss+xml' }, '<rss version="2.0"><channel><title>Tide Times</title></channel></rss>');
+        if (req.url === '/old') return send(res, 301, { 'content-type': 'text/html', location: '/story' }, '<a href="/story">moved</a>');
         send(res, 404, { 'content-type': 'text/plain' }, 'not found');
     }).listen(ORIGIN_PORT, () => console.log(`origin  http://localhost:${ORIGIN_PORT}`));
 }
@@ -97,7 +104,8 @@ createServer(async (req, res) => {
             if (req.method === 'GET' && stored.status === 200) cache.set(key, { response: stored, expires: Date.now() + CACHE_TTL_MS });
         }
         const final = await host.clientResponse({ status: stored.status, headers: stored.headers, body: stored.body, snapshot: { method: req.method, url: req.url, headers } });
-        served = { status: final.status, headers: final.headers.entries(), body: final.body, how };
+        const rewrite = final.rules.length ? ` · ${final.rules.length} HtmlRules` : '';
+        served = { status: final.status, headers: final.headers.entries(), body: await applyHtmlRules(final.body ?? stored.body, final.rules), how: how + rewrite };
     }
 
     const h = {};
@@ -110,4 +118,4 @@ createServer(async (req, res) => {
     );
     console.log(`${req.method} ${req.url} ${served.status} ${served.how} ${(performance.now() - started).toFixed(0)}ms`);
     for (const f of fetches) console.log(`    ${f}`);
-}).listen(EDGE_PORT, () => console.log(`edge    http://localhost:${EDGE_PORT}  (MOS ${env.MOS_HOST ?? 'unset'}, origin ${originUrl})`));
+}).listen(EDGE_PORT, () => console.log(`edge    http://localhost:${EDGE_PORT}  ${WORKER} (MOS ${env.MOS_HOST ?? 'unset'}, origin ${originUrl})`));

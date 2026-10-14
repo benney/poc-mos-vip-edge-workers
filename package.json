@@ -19,6 +19,7 @@
         "build:test": "node scripts/build.mjs --test",
         "build:web": "node scripts/build.mjs && node scripts/build-web.mjs",
         "web": "npm run build:web && node server.mjs",
+        "serve": "node scripts/serve.mjs",
         "test": "node scripts/build.mjs --test && node mos-proxy/test.mjs",
         "test:e2e": "node scripts/build.mjs && node mos-proxy/e2e.mjs",
         "test:whole-body": "node scripts/build.mjs mos-proxy-whole-body && node mos-proxy-whole-body/e2e.mjs",

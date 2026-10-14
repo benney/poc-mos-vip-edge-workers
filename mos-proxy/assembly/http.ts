@@ -1,5 +1,5 @@
 // URL/header helpers. No URL class in AS — req.url is already origin-relative.
-import { Headers, Request } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { Headers, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { Config } from "./config";
 
 // Set by the host on the outgoing request; forwarding stale copies breaks the body.
@@ -56,18 +56,26 @@ export function looksLikeAsset(path: string): bool {
   return false;
 }
 
-/** A GET for a page, not an asset or an ignored path: the only requests that get decisions. */
-export function isPageRequest(cfg: Config, req: Request): bool {
-  if (req.method != "GET") return false;
-  const path = pathOf(req.url);
-  if (looksLikeAsset(path)) return false;
+function isIgnoredPath(cfg: Config, path: string): bool {
   for (let i = 0; i < cfg.ignorePrefixes.length; i++) {
-    if (path.startsWith(cfg.ignorePrefixes[i])) return false;
+    if (path.startsWith(cfg.ignorePrefixes[i])) return true;
   }
-  return true;
+  return false;
 }
 
-export function isHtml(headers: Headers): bool {
-  const contentType = headers.get("content-type");
-  return contentType !== null && contentType.toLowerCase().startsWith("text/html");
+/**
+ * Mirrors the upstream proxy: decisions only for an HTML response that is not a
+ * redirect, on a path that is not ignored. The Content-Type check is case-sensitive there too.
+ */
+export function wantsDecision(cfg: Config, req: Request, resp: Response): bool {
+  const contentType = resp.headers.get("content-type");
+  if (contentType === null || !contentType.startsWith("text/html")) return false;
+  if (resp.status >= 300 && resp.status < 400) return false;
+  return !isIgnoredPath(cfg, pathOf(req.url));
+}
+
+/** A request-time guess, for the few things that must be decided before the response exists. */
+export function mayBePage(cfg: Config, req: Request): bool {
+  const path = pathOf(req.url);
+  return !looksLikeAsset(path) && !isIgnoredPath(cfg, path);
 }

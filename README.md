@@ -15,8 +15,9 @@ production CDN proxy, and documents which parts of it the phase model can expres
 
 ```bash
 npm install
-npm run test:all      # 278 assertions across the examples
+npm run test:all      # 319 assertions across the examples
 npm run web           # playground at http://localhost:8787
+npm run serve         # a worker as a local edge in front of a real MOS (see scripts/serve.mjs)
 npm run hello         # playground with the minimal example instead
 ```
 
@@ -29,7 +30,7 @@ npm run hello         # playground with the minimal example instead
 | [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | 112 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 233 assertions. |
+| [`mos-proxy`](mos-proxy)                       | 112 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 235 assertions. |
 | [`mos-proxy-whole-body`](mos-proxy-whole-body) | 108 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
@@ -251,6 +252,7 @@ web/ui.mjs               playground UI (main thread)
 web/worker.mjs           playground pipeline (Web Worker: host + lol-html)
 scripts/build.mjs        asc build for one example
 scripts/build-web.mjs    esbuild bundle for one example
+scripts/serve.mjs        a worker as a local edge: real fetches, in-memory cache, demo origin
 server.mjs               static server, plus an optional live pass-through
 devkit/crypto.mjs        sync SHA-256/HMAC/JWT backing the crypto host calls
 examples/hello/          minimal worker

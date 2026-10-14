@@ -6,10 +6,14 @@ parses JSON, resolves identity from cookies, and rewrites HTML from the API's re
 
 ```bash
 npm test           # 97 unit assertions
-npm run test:e2e   # 84 end-to-end assertions
-npm run test:web   # 28 assertions against the browser bundle
+npm run test:e2e   # 90 end-to-end assertions
+npm run test:web   # 26 assertions against the browser bundle
 npm run test:live  # 22 assertions against a stand-in org
 npm run web        # playground at http://localhost:8787
+
+# As a local edge in front of a demo article, against a real MOS (e.g. a local firecrest)
+node scripts/build.mjs mos-proxy
+MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... npm run serve
 ```
 
 It is a partial port. The original runs server-side on Cloudflare/Fastly/Akamai with a
@@ -27,7 +31,8 @@ onClientRequest   1a  /mos-endpoints/*      -> fetch API, respondWith  (short-ci
                               |
                     (cache, or origin on a miss: the page is stored as the origin sent it)
                               |
-onClientResponse      GET html page         -> read identity cookies from resp.request
+onClientResponse      text/html response, not a redirect, path not ignored
+                                            -> read identity cookies from resp.request
                                                fetch() POST /api/v1/surface-decisions
                                                Set-Cookie: anonymous id
                                                apply header/status changes

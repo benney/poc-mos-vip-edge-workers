@@ -9,7 +9,7 @@ import { compileHttpBehavior } from "../../mos-proxy/assembly/behavior";
 import { loadConfig } from "../../mos-proxy/assembly/config";
 import { fetchDecisions, ProxyOrigin } from "../../mos-proxy/assembly/decisions";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "../../mos-proxy/assembly/endpoints";
-import { firstIp, isHtml, isPageRequest, pathOf } from "../../mos-proxy/assembly/http";
+import { firstIp, mayBePage, pathOf, wantsDecision } from "../../mos-proxy/assembly/http";
 import { applyHttpOps } from "../../mos-proxy/assembly/rules";
 
 export {
@@ -22,10 +22,8 @@ export {
   client_response_body,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
-/** Only an uncompressed HTML page can go to MOS; anything else is served as it is. */
-function isTransformableHtml(resp: Response): bool {
-  if (resp.status >= 300 && resp.status < 400) return false;
-  if (!isHtml(resp.headers)) return false;
+/** MOS can only read an uncompressed page; a compressed one is served as it is. */
+function isUncompressed(resp: Response): bool {
   const encoding = resp.headers.get("content-encoding");
   return encoding === null || encoding.length == 0 || encoding.toLowerCase() == "identity";
 }
@@ -47,9 +45,9 @@ onClientRequest((req: Request): void => {
   // Stage 1b: authenticated API routing (POST/PUT/PATCH).
   if (handleAuthenticatedRoute(cfg, req, path, fullUrl)) return;
 
-  // MOS needs the page uncompressed. Every page request asks for the same variant, so
-  // the cache still shares one copy.
-  if (isPageRequest(cfg, req)) req.headers.set("accept-encoding", "identity");
+  // MOS needs the page uncompressed, which has to be asked for before the response exists.
+  // Every page request asks for the same variant, so the cache still shares one copy.
+  if (mayBePage(cfg, req)) req.headers.set("accept-encoding", "identity");
 });
 
 onClientResponse((resp: Response): void => {
@@ -58,7 +56,7 @@ onClientResponse((resp: Response): void => {
 
   // The client's request as it arrived, before onClientRequest.
   const req = resp.request;
-  if (!isPageRequest(cfg, req) || !isTransformableHtml(resp)) return;
+  if (!wantsDecision(cfg, req, resp) || !isUncompressed(resp)) return;
   const html = resp.text();
   if (html === null) return;
 

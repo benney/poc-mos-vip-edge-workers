@@ -8,7 +8,7 @@ npm run test:whole-body   # end-to-end assertions against a fake MOS and origin
 
 # Serve the worker over HTTP with real fetches and an in-memory cache, in front of a demo article origin
 node scripts/build.mjs mos-proxy-whole-body
-MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... node mos-proxy-whole-body/serve.mjs
+MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... node scripts/serve.mjs mos-proxy-whole-body
 # site on :4700 (EDGE_PORT), demo origin on :4701 (ORIGIN_PORT); ORIGIN_URL replaces the demo
 # origin; CACHE_TTL_MS (default 60000) sets how long a page stays cached
 ```
@@ -19,11 +19,12 @@ the rules have no end-tag hook, so it cannot send page metadata or do range repl
 This worker sends MOS the page itself, from `onClientResponse`, after the cache:
 
 ```
-onClientRequest   GET html page        -> accept-encoding: identity
+onClientRequest   path not an asset or ignored -> accept-encoding: identity
                         |
               (cache, or origin on a miss: the page is stored as the origin sent it)
                         |
-onClientResponse  uncompressed HTML?   no  -> served as is
+onClientResponse  text/html, not a redirect, path not ignored, uncompressed?
+                                       no  -> served as is
                   POST /api/v1/surface-decisions
                        http.proxyOrigin = { status, body }
                   origin status + headers
@@ -51,7 +52,7 @@ As `mos-proxy`, except `MOS_INJECT_SCRIPT_URL`, which this worker ignores.
 | Failure | Served |
 |---|---|
 | MOS fails | The page as served, unmodified |
-| Page is compressed, non-HTML or a redirect | As served, no MOS call |
+| Response is not `text/html`, is a redirect, is compressed, or the path is ignored | As served, no MOS call |
 | Unconfigured | Pass-through |
 
 As with every MOS proxy, a failed decision serves the full page.

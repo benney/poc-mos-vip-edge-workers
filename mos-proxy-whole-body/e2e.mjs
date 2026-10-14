@@ -202,7 +202,7 @@ section('only uncompressed HTML pages go to MOS');
     }
     const post = fresh();
     await request(post, { method: 'POST', url: '/story' });
-    eq('POST: no MOS call', post.mosCalls.length, 0);
+    eq('POST answered with HTML: decided, as upstream', post.mosCalls.length, 1);
     const asset = fresh();
     await request(asset, { url: '/wp-content/style.css', headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
     eq('asset keeps its accept-encoding', header(asset.originCalls[0].headers, 'accept-encoding'), ['br']);

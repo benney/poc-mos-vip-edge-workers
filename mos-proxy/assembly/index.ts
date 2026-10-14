@@ -8,7 +8,7 @@ import { compileHttpBehavior } from "./behavior";
 import { loadConfig } from "./config";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
-import { firstIp, isHtml, isPageRequest, pathOf } from "./http";
+import { firstIp, pathOf, wantsDecision } from "./http";
 import { applyHttpOps, applyPlan, compilePlan } from "./rules";
 
 export {
@@ -43,7 +43,7 @@ onClientResponse((resp: Response): void => {
 
   // The client's request as it arrived, before onClientRequest.
   const req = resp.request;
-  if (!isPageRequest(cfg, req) || !isHtml(resp.headers)) return;
+  if (!wantsDecision(cfg, req, resp)) return;
 
   const path = pathOf(req.url);
   const host = req.headers.get("host");
