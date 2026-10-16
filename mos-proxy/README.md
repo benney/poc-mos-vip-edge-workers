@@ -5,11 +5,15 @@ worker. This is the worker the devkit was built to test: it calls an external AP
 parses JSON, resolves identity from cookies, and rewrites HTML from the API's response.
 
 ```bash
-npm test           # 97 unit assertions
-npm run test:e2e   # 84 end-to-end assertions
-npm run test:web   # 28 assertions against the browser bundle
+npm test           # 99 unit assertions
+npm run test:e2e   # 92 end-to-end assertions
+npm run test:web   # 26 assertions against the browser bundle
 npm run test:live  # 22 assertions against a stand-in org
 npm run web        # playground at http://localhost:8787
+
+# As a local edge in front of a demo article, against a real MOS (e.g. a local MOS stack)
+node scripts/build.mjs mos-proxy
+MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... npm run serve
 ```
 
 It is a partial port. The original runs server-side on Cloudflare/Fastly/Akamai with a
@@ -18,30 +22,30 @@ model can express is described below, along with what it cannot.
 
 ## The pipeline
 
-`fetch()` is client-request phase only, and `HtmlRules` apply only in response phases.
-So the work splits, with a compact rule IR carried forward in a request header:
+The host allows `fetch()` in every phase (SDK `main`, 2026-10-13), and `HtmlRules` apply in
+response phases. So page decisions run in `onClientResponse`, after the cache:
 
 ```
 onClientRequest   1a  /mos-endpoints/*      -> fetch API, respondWith  (short-circuit)
                   1b  authenticated routes  -> merge body + identity, respondWith
-                  1c  GET html navigation   -> read identity cookies
+                              |
+                    (cache, or origin on a miss: the page is stored as the origin sent it)
+                              |
+onClientResponse      text/html response, not a redirect, path not ignored
+                                            -> read identity cookies from resp.request
                                                fetch() POST /api/v1/surface-decisions
+                                               Set-Cookie: anonymous id
+                                               apply header/status changes
+                                               cache-control: private, no-store
                                                response carries a `body`?
-                                                 yes -> respondWith  (short-circuit)
-                                                 no  -> compile rule IR + http ops
-                                               req.headers.set('x-mos-plan', IR)
-                              |
-                         (origin)
-                              |
-onOriginResponse         resp.request.headers.get('x-mos-plan')
-                         Set-Cookie: anonymous id
-                         apply header/status changes
-                         replay IR as HtmlRules -> install()
-                         setCacheControl('no-store')
+                                                 yes -> setBodyText, skip components
+                                                 no  -> compile rules -> HtmlRules.install()
 ```
 
-`onOriginResponse` is the only phase whose request snapshot includes client-phase
-mutations, so it is the only place the plan header can be read back.
+VIP caches the page the origin sent, and each reader's copy is personalised on the way
+out. The origin renders a page once per cache lifetime, not once per reader.
+`resp.request` in `onClientResponse` is the request as the client sent it, which is all
+the decision needs.
 
 ## What works
 
@@ -54,6 +58,8 @@ mutations, so it is the only place the plan header can be read back.
 | Custom endpoints | `<prefix>/rest?q` proxied to the API, client method/headers/body forwarded |
 | Authenticated routes | Client JSON body merged with resolved identity, called with the configured token |
 | HTTP-level behaviour | Header replace/add/remove, cookies, status override, full-body replacement |
+| Cookies to decisions | `MOS_SURFACE_DECISIONS_COOKIES`: matching request cookies, then the origin's Set-Cookie values, sent decoded as `http.cookies` |
+| Resource fields | `buildResource` in `assembly/resource.ts` adds or overrides fields over `{ id: path }`, like the upstream `ResourceProvider`. Edit it per site; string values only |
 | Fail-open | Every failure is a checked return; an unconfigured or erroring worker passes through |
 
 `content.remove` becomes `replace(selector, '')` plus outside inserts, since `before` and
@@ -61,28 +67,22 @@ mutations, so it is the only place the plan header can be read back.
 do not.
 
 A response carrying a `body` means "return immediately", which also means HTML rewriting
-is skipped. That is served from the *request* phase via `respondWith`, so origin is never
-contacted. The alternative would be exporting an `origin_response_body` marker, which is
-phase-wide and would force the host to buffer every origin response, defeating
-`HtmlRules` streaming for all traffic. It is also safer for a hard paywall: origin never
-renders the paid content.
-
-Two consequences of that choice: with a `body`, header add/remove applies to an empty
-header set rather than origin's, and an un-overridden status is `200` rather than
-origin's, which is not known at request time.
+is skipped. The worker swaps the page with `setBodyText` and keeps the origin's status
+and headers, as the upstream proxy does. It does not export `client_response_body`: that
+marker is phase-wide and would buffer every response, defeating `HtmlRules` streaming.
+Whether the host honours a body set without the marker is unverified; the conformance
+probe's `/__probe/set-body-client-response` checks it.
 
 ## What it cannot do
 
 | Missing | Why |
 |---|---|
-| Page metadata in the request | `HtmlRules` is write-only — no way to read `<meta>` tags into the worker. The only phase that could read the HTML has no `fetch()`. |
+| Page metadata in the request | `HtmlRules` is write-only, so `<meta>` tags never reach the worker without buffering the body. The whole-body worker does that. |
 | Range replacement between markers | No `onEndTag`, no position counting. |
 | Rewriting links in the body | Needs a buffered body, losing streaming and the no-size-ceiling property. |
-| Regex ignore paths | No `RegExp` in AssemblyScript; `MOS_IGNORE_PREFIXES` is prefix matching. |
 
 Also worth knowing: the anonymous cookie is re-set on every request, where the original
-only sets it on mint; and personalised HTML is marked `no-store`, so `onOriginResponse`
-runs on every request and there is no cache benefit.
+only sets it on mint; and every HTML page view makes one decisions call, cached or not.
 
 ## Config
 
@@ -98,6 +98,8 @@ missing any one makes the worker pass through untouched.
 | `MOS_ANON_FALLBACK` | `true` | `false` opts out of minting a fallback anonymous id |
 | `MOS_INJECT_SCRIPT_URL` | none | Injected into `<head>` |
 | `MOS_IGNORE_PREFIXES` | none | Comma-separated path prefixes |
+| `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
+| `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 ## Live mode

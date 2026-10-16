@@ -19,6 +19,8 @@ export class Config {
   jwtCookie: string = "mos_user_jwt";
   injectScriptUrl: string = "";
   ignorePrefixes: string[] = [];
+  ignorePatterns: string[] = [];
+  decisionCookiePatterns: string[] = [];
   authRoutes: AuthRoute[] = [];
   anonFallback: bool = true;
   /**
@@ -39,8 +41,20 @@ export class Config {
     return this.valid.toString() + "\n" + this.mosHost + "\n" + this.mosEnvironment + "\n"
       + this.mosEndpointsPrefix + "\n" + this.anonCookie + "\n" + this.jwtCookie + "\n"
       + this.anonFallback.toString() + "\n" + routes + "\n" + this.ignorePrefixes.join("|")
-      + "\n" + this.includeHttp.toString();
+      + "\n" + this.includeHttp.toString() + "\n" + this.ignorePatterns.join(" ")
+      + "\n" + this.decisionCookiePatterns.join(" ");
   }
+}
+
+function splitSpaces(value: string | null): string[] {
+  const out: string[] = [];
+  if (value === null) return out;
+  const parts = value.split(" ");
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i].trim();
+    if (p.length > 0) out.push(p);
+  }
+  return out;
 }
 
 /** Derives the env path segment from the key: `sk_<env>_<suffix>` -> `<env>_<suffix>`. */
@@ -114,7 +128,7 @@ export function loadConfig(): Config {
   const routes = getenv("MOS_AUTHENTICATED_ROUTES");
   if (routes !== null && routes.length > 0) c.authRoutes = parseAuthRoutes(routes);
 
-  // Comma-separated path prefixes (not regex — no RegExp in AS).
+  // Comma-separated path prefixes.
   const ignore = getenv("MOS_IGNORE_PREFIXES");
   if (ignore !== null && ignore.length > 0) {
     const parts = ignore.split(",");
@@ -123,6 +137,20 @@ export function loadConfig(): Config {
       if (p.length > 0) c.ignorePrefixes.push(p);
     }
   }
+
+  // Space-separated path regexes, as the upstream proxy's surfaceDecisionsIgnorePathPatterns.
+  // Compiled where they are used, so a malformed one aborts only page requests.
+  const patterns = getenv("MOS_IGNORE_PATTERNS");
+  if (patterns !== null && patterns.length > 0) {
+    const parts = patterns.split(" ");
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].trim();
+      if (p.length > 0) c.ignorePatterns.push(p);
+    }
+  }
+
+  // Space-separated cookie-name regexes, as the upstream proxy's surfaceDecisionsCookies.
+  c.decisionCookiePatterns = splitSpaces(getenv("MOS_SURFACE_DECISIONS_COOKIES"));
 
   c.valid = true;
   return c;

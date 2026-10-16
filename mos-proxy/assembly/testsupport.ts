@@ -1,7 +1,8 @@
 // Test-only glue: re-exports pure logic and builds payloads without a host Request.
 import { JSON } from "json-as";
 import { loadConfig } from "./config";
-import { readCookie } from "./cookies";
+import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { cookieValue } from "./cookies";
 import { buildIdentity, HttpPayload } from "./decisions";
 import { mergeBody } from "./endpoints";
 
@@ -10,9 +11,10 @@ export { customEndpointTarget, matchRoute, mergeBody } from "./endpoints";
 /** Mirrors identityFromRequest + buildHttpPayload without a host Request. */
 export function buildIdentityForTest(body: string, cookieHeader: string, url: string): string {
   const cfg = loadConfig();
+  const cookies = new Cookies(cookieHeader);
   const identity = buildIdentity(
-    readCookie(cookieHeader, cfg.anonCookie),
-    readCookie(cookieHeader, cfg.jwtCookie),
+    cookieValue(cookies, cfg.anonCookie),
+    cookieValue(cookies, cfg.jwtCookie),
     cfg.anonFallback,
   );
   const http = new HttpPayload();

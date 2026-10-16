@@ -221,14 +221,6 @@ function renderResult(result) {
         out.appendChild(c);
     }
 
-    // Plan IR
-    if (result.planHeader) {
-        const c = card('Plan IR', 'x-mos-plan request header');
-        c.appendChild(el('p', 'hint', `${result.planHeader.length} bytes of the 64 KiB header limit. This is the only channel that survives into onOriginResponse.`));
-        c.appendChild(pre(prettyJson(result.planHeader)));
-        out.appendChild(c);
-    }
-
     // Rules
     if (result.rules.length) {
         const c = card('HtmlRules submitted to host');

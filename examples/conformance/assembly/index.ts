@@ -9,8 +9,8 @@
 // Probes are separate routes on purpose: AssemblyScript has no try/catch, so anything
 // that might throw has to be isolated to one request.
 import {
-  fetch, getenv, HtmlRules, KV, onClientRequest, onClientResponse, onOriginResponse,
-  Request, Response,
+  fetch, getenv, getRandomValues, hexEncode, HtmlRules, KV, onClientRequest, onClientResponse,
+  onOriginResponse, RegExp, Request, Response,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
 export {
@@ -58,8 +58,8 @@ onClientRequest((req: Request): void => {
     return; // fall through to origin; the response phases report what they saw
   }
 
-  // Documented: fetch() is client-request phase only. Confirm it works here, then
-  // /fetch-origin-phase confirms it is refused later.
+  // fetch() is allowed in every phase since SDK main 2026-10-13. These three probes
+  // confirm the host agrees in each phase the MOS workers use.
   if (probe.startsWith("fetch-client-phase")) {
     const target = getenv("PROBE_FETCH_URL");
     const resp = fetch(target === null ? "https://example.com/" : target);
@@ -75,6 +75,29 @@ onClientRequest((req: Request): void => {
   if (probe.startsWith("rules-in-request-phase")) {
     new HtmlRules().appendInside("body", "<!--REQUEST-PHASE-RULE-->").install();
     return; // if the marker appears in the page, the host applied it after all
+  }
+
+  // SDK 0.6 runs RegExp on the host's Rust regex. The devkit stands in with JS RegExp,
+  // so these lines are the ones to diff against a deploy.
+  if (probe.startsWith("regex")) {
+    const post = new RegExp("^/(?<year>\\d{4})/(?<slug>[a-z0-9-]+)/?$", "i");
+    const m = post.exec("/2026/Tide-Tables/");
+    const words = new RegExp("\\b(\\w)(\\w*)", "g");
+    req.respondText(200,
+      line("exec.slug", m === null ? "(no match)" : m.group("slug")!)
+      + line("exec.year.index", m === null ? "-" : m.start(1).toString())
+      + line("test.unicode", new RegExp("^\\p{L}+$").test("Tōkyō") ? "true" : "false")
+      + line("replace.template", words.replace("tide tables", "$2$1"))
+      + line("replace.first", new RegExp("a").replace("banana", "[$&]"))
+      + line("split", new RegExp(",\\s*").split("a, b,c").join("|"))
+      + line("multibyte.index", new RegExp("b").search("ééb").toString()));
+    return;
+  }
+
+  if (probe.startsWith("random")) {
+    const bytes = getRandomValues(new Uint8Array(16));
+    req.respondText(200, line("bytes", hexEncode(bytes).length.toString()) + line("value", hexEncode(bytes)));
+    return;
   }
 
   if (probe.startsWith("kv")) {
@@ -95,8 +118,10 @@ onClientRequest((req: Request): void => {
     return; // installed in onOriginResponse, where rules are effective
   }
 
-  // Must reach origin so onOriginResponse can run its half of the probe.
+  // Must reach origin (or the cache) so the response phases can run their half of the probe.
   if (probe.startsWith("fetch-origin-phase")) return;
+  if (probe.startsWith("fetch-client-response-phase")) return;
+  if (probe.startsWith("set-body-client-response")) return;
 
   if (probe.startsWith("body-marker")) {
     const body = req.text();
@@ -109,9 +134,13 @@ onClientRequest((req: Request): void => {
     "VIP edge worker conformance probe\n\n"
     + "/__probe/snapshot                cross-phase request snapshot visibility\n"
     + "/__probe/fetch-client-phase      fetch() in the allowed phase\n"
-    + "/__probe/fetch-origin-phase      fetch() in a disallowed phase\n"
+    + "/__probe/fetch-origin-phase      fetch() in onOriginResponse\n"
+    + "/__probe/fetch-client-response-phase  fetch() in onClientResponse\n"
+    + "/__probe/set-body-client-response setBodyText in onClientResponse without the body marker\n"
     + "/__probe/rules-in-request-phase  are request-phase rules dropped?\n"
     + "/__probe/selector                install PROBE_SELECTOR (one per request)\n"
+    + "/__probe/regex                   RegExp on the host's regex engine\n"
+    + "/__probe/random                  getRandomValues\n"
     + "/__probe/kv                      KV bytes + counter round-trip\n"
     + "/__probe/body-marker             is req.body populated without the marker?\n"
     + "/__probe/memory-{256k..8m}       can the worker allocate and touch this size?\n");
@@ -150,7 +179,25 @@ onOriginResponse((resp: Response): void => {
 onClientResponse((resp: Response): void => {
   const req = resp.request;
   if (!req.url.startsWith(PROBE)) return;
-  if (!req.url.slice(PROBE.length).startsWith("snapshot")) return;
+  const probe = req.url.slice(PROBE.length);
+
+  if (probe.startsWith("fetch-client-response-phase")) {
+    const target = getenv("PROBE_FETCH_URL");
+    const out = fetch(target === null ? "https://example.com/" : target);
+    resp.headers.set("x-probe-client-response-fetch-iserror", out.isError() ? "true" : "false");
+    resp.headers.set("x-probe-client-response-fetch-errorkind", out.errorKind === null ? "(null)" : out.errorKind!);
+    resp.headers.set("x-probe-client-response-fetch-status", out.status.toString());
+    return;
+  }
+
+  // The streaming MOS worker replaces the page this way for a workflow's own body. The
+  // body marker is not exported, so this asks whether the host honours it anyway.
+  if (probe.startsWith("set-body-client-response")) {
+    resp.setBodyText("PROBE-REPLACED-BODY");
+    return;
+  }
+
+  if (!probe.startsWith("snapshot")) return;
 
   // Documented: this snapshot predates request-phase mutations, so the mark
   // should NOT be visible here.

@@ -66,21 +66,19 @@ console.log('\nbundled worker: component injection');
     const r = await run('Component injection');
     ok('rewritten', r.outcome === 'rewritten', r.outcome);
     ok('one MOS call', r.mosCalls.length === 1);
-    ok('plan header produced', typeof r.planHeader === 'string' && r.planHeader.length > 0);
     // Proves the inlined lol-html actually parsed and rewrote the HTML.
     ok('lol-html injected promo', r.final.body.includes('<aside class="promo">Subscribe for full access</aside><article'));
     ok('lol-html injected web component', r.final.body.includes('<mos-paywall version="2"'));
     ok('lol-html removed house ad', !r.final.body.includes('Generic house ad'));
     ok('lol-html injected script into head', r.final.body.includes('cdn.mos.test/mos.js'));
     ok('anon cookie set', r.final.headers.some(([n, v]) => n === 'set-cookie' && v.includes('anon-7f3a')));
-    ok('no-store applied', r.final.headers.some(([n, v]) => n === 'cache-control' && v === 'no-store'));
+    ok('reader copy private', r.final.headers.some(([n, v]) => n === 'cache-control' && v === 'private, no-store'));
 }
 
 console.log('\nbundled worker: paywall hard block');
 {
     const r = await run('Paywall hard block');
-    ok('short-circuited', r.outcome === 'short-circuited');
-    ok('origin not contacted', r.reachedOrigin === false);
+    ok('page replaced', r.outcome === 'replaced', r.outcome);
     ok('status 402', r.final.status === 402);
     ok('replacement body served', r.final.body.includes('Subscribe to continue reading'));
     ok('no origin html leaked', !r.final.body.includes('first paragraph'));

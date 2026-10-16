@@ -1,18 +1,9 @@
 // URL/header helpers. No URL class in AS — req.url is already origin-relative.
-import { Headers, Request } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { Headers, RegExp, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { Config } from "./config";
 
 // Set by the host on the outgoing request; forwarding stale copies breaks the body.
 const HOP_HEADERS: string[] = ["host", "content-length", "transfer-encoding", "connection", "keep-alive", "upgrade"];
-
-export function pathOf(url: string): string {
-  const q = url.indexOf("?");
-  return q < 0 ? url : url.slice(0, q);
-}
-
-export function queryOf(url: string): string {
-  const q = url.indexOf("?");
-  return q < 0 ? "" : url.slice(q);
-}
 
 export function firstIp(value: string): string {
   const comma = value.indexOf(",");
@@ -40,4 +31,43 @@ export function forwardHeaders(req: Request, skipExtra: string): Headers {
     out.append(name, entries[i][1]);
   }
   return out;
+}
+
+const ASSET_SUFFIXES: string[] = [
+  ".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif",
+  ".ico", ".woff", ".woff2", ".ttf", ".map", ".json", ".xml", ".txt", ".mp4", ".pdf",
+];
+
+export function looksLikeAsset(path: string): bool {
+  const lower = path.toLowerCase();
+  for (let i = 0; i < ASSET_SUFFIXES.length; i++) {
+    if (lower.endsWith(ASSET_SUFFIXES[i])) return true;
+  }
+  return false;
+}
+
+function isIgnoredPath(cfg: Config, path: string): bool {
+  for (let i = 0; i < cfg.ignorePrefixes.length; i++) {
+    if (path.startsWith(cfg.ignorePrefixes[i])) return true;
+  }
+  for (let i = 0; i < cfg.ignorePatterns.length; i++) {
+    if (new RegExp(cfg.ignorePatterns[i]).test(path)) return true;
+  }
+  return false;
+}
+
+/**
+ * Mirrors the upstream proxy: decisions only for an HTML response that is not a
+ * redirect, on a path that is not ignored. The Content-Type check is case-sensitive there too.
+ */
+export function wantsDecision(cfg: Config, req: Request, resp: Response): bool {
+  const contentType = resp.headers.get("content-type");
+  if (contentType === null || !contentType.startsWith("text/html")) return false;
+  if (resp.status >= 300 && resp.status < 400) return false;
+  return !isIgnoredPath(cfg, req.path);
+}
+
+/** A request-time guess, for the few things that must be decided before the response exists. */
+export function mayBePage(cfg: Config, req: Request): bool {
+  return !looksLikeAsset(req.path) && !isIgnoredPath(cfg, req.path);
 }

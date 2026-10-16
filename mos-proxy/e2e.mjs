@@ -1,5 +1,5 @@
 // End-to-end: real compiled worker + Node host + fake MOS API + fake WordPress origin.
-// Drives onClientRequest -> origin -> onOriginResponse and applies the resulting
+// Drives onClientRequest -> cache -> origin -> onClientResponse and applies the resulting
 // rules with real lol-html, so the assertions are against final wire output.
 import { readFileSync } from 'node:fs';
 import { EdgeWorkerHost } from '../devkit/host.mjs';
@@ -63,10 +63,14 @@ function makeMosApi(state) {
 function origin(req) {
     if (req.url.endsWith('.css')) return { status: 200, headers: [['content-type', 'text/css']], body: 'body{}' };
     if (req.url.startsWith('/feed')) return { status: 200, headers: [['content-type', 'application/xml']], body: '<rss/>' };
+    if (req.url === '/old') return { status: 301, headers: [['content-type', 'text/html'], ['location', '/story']], body: '<a href="/story">moved</a>' };
     return { status: 200, headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/']], body: ORIGIN_HTML };
 }
 
-/** One full request through both phases. */
+/**
+ * One full request: client request, then the edge cache (a plain map keyed by URL that
+ * stores every GET), the origin on a miss, then the client response.
+ */
 async function request(state, { method = 'GET', url = '/story', headers = [], body = null } = {}) {
     const host = await new EdgeWorkerHost(WASM, {
         env: state.env ?? ENV,
@@ -79,21 +83,28 @@ async function request(state, { method = 'GET', url = '/story', headers = [], bo
     }
 
     const originReq = { method: phase1.method, url: phase1.url, headers: phase1.headers, body: phase1.body };
-    const originRes = origin(originReq);
+    let stored = method === 'GET' ? state.cache.get(originReq.url) : undefined;
+    const hitOrigin = stored === undefined;
+    if (hitOrigin) {
+        stored = origin(originReq);
+        state.originHits++;
+        if (method === 'GET') state.cache.set(originReq.url, stored);
+    }
 
-    const phase2 = await host.originResponse({
-        status: originRes.status,
-        headers: originRes.headers,
-        snapshot: originReq,
+    const phase2 = await host.clientResponse({
+        status: stored.status,
+        headers: stored.headers,
+        body: stored.body,
+        snapshot: { method, url, headers },
     });
 
-    const html = await applyHtmlRules(originRes.body, phase2.rules);
+    const html = await applyHtmlRules(phase2.body ?? stored.body, phase2.rules);
     return {
         shortCircuited: false,
         status: phase2.status,
         headers: phase2.headers,
         body: html,
-        hitOrigin: true,
+        hitOrigin,
         originReq,
         rules: phase2.rules,
         mosCalls: state.calls,
@@ -111,7 +122,7 @@ const eq = (name, actual, expected) => {
 const ok = (name, cond) => eq(name, !!cond, true);
 const section = (s) => console.log(`\n${s}`);
 
-const fresh = (over = {}) => ({ calls: [], decisions: decisions(), ...over });
+const fresh = (over = {}) => ({ calls: [], decisions: decisions(), cache: new Map(), originHits: 0, ...over });
 
 // ---------- scenario 1: component injection ----------
 
@@ -141,7 +152,7 @@ section('anonymous page view: components + script injection');
     eq('surface slug sent', sent.surfaceSlug, 'news');
     eq('resource id is path', sent.resource.id, '/story');
     eq('mints identity when no cookie', sent.identity.createAnonymousIdentifier, true);
-    eq('origin status unknown at request time', sent.http.proxyOrigin.status, 0);
+    eq('origin status sent', sent.http.proxyOrigin.status, 200);
 
     ok('promo inserted before article', res.body.includes('<aside id="promo">Subscribe</aside><article'));
     ok('web component appended inside article', res.body.includes('<mos-paywall version="2" props="{&quot;tier&quot;:&quot;gold&quot;}"></mos-paywall></article>'));
@@ -150,14 +161,13 @@ section('anonymous page view: components + script injection');
     ok('original content preserved', res.body.includes('First para.') && res.body.includes('fin'));
 
     eq('anon cookie set', res.headers.getAll('set-cookie'), ['wp_session=xyz; Path=/', 'mos_anon_id=anon-e2e-1; Path=/']);
-    eq('personalised html not cached', res.headers.get('cache-control'), 'no-store');
+    eq('reader copy is private', res.headers.get('cache-control'), 'private, no-store');
     eq('status unchanged', res.status, 200);
-    ok('plan header sent to origin', res.originReq.headers.get('x-mos-plan') !== null);
 }
 
 // ---------- scenario 2: paywall hard block ----------
 
-section('surfaceBehavior with body: short-circuits before origin');
+section('surfaceBehavior with body: replaces the page');
 {
     const state = fresh();
     state.decisions = decisions({
@@ -173,8 +183,7 @@ section('surfaceBehavior with body: short-circuits before origin');
     });
     const res = await request(state, { url: '/premium' });
 
-    ok('short-circuited', res.shortCircuited);
-    ok('origin never contacted', !res.hitOrigin);
+    eq('components skipped', res.rules.length, 0);
     eq('status from behavior', res.status, 402);
     eq('body replaced', res.body, '<html><body><h1>Subscribe to continue</h1></body></html>');
     eq('replacement headers applied', res.headers.get('x-mos-paywall'), 'blocked');
@@ -182,18 +191,18 @@ section('surfaceBehavior with body: short-circuits before origin');
     ok('no origin html leaked', !res.body.includes('First para.'));
 }
 
-section('surfaceBehavior body with no-body status drops the body');
+section('surfaceBehavior body with no-body status');
 {
     const state = fresh();
     state.decisions = decisions({ surfaceBehavior: { http: { status: 304, body: 'ignored' } } });
     const res = await request(state, { url: '/cached' });
-    eq('304 short-circuits', [res.shortCircuited, res.status], [true, 304]);
-    eq('body dropped', res.body, null);
+    eq('304 applied', res.status, 304);
+    ok('override body not sent', !res.body.includes('ignored'));
 }
 
 // ---------- scenario 3: header/status modify, applied after origin ----------
 
-section('surfaceBehavior without body: applied on the origin response');
+section('surfaceBehavior without body: applied on the page response');
 {
     const state = fresh();
     state.decisions = decisions({
@@ -227,12 +236,10 @@ section('surfaceBehavior headers replacement wipes origin headers');
     // Matches the upstream proxy: the header set is rebuilt *after* the identity cookie
     // is appended, so a `headers` replacement drops the anon cookie too.
     eq('replacement drops anon cookie, as upstream', res.headers.getAll('set-cookie'), []);
-    // cache-control/x-original-cache-control are added afterwards by setCacheControl,
-    // since the script-injection rule still applies to this response.
+    // cache-control is set afterwards, to keep the reader's copy out of shared caches.
     eq('no origin headers survive the replacement',
-        res.headers.entries().filter(([n]) => !['content-type', 'x-only', 'cache-control', 'x-original-cache-control'].includes(n)), []);
-    eq('setCacheControl writes both headers',
-        [res.headers.get('cache-control'), res.headers.get('x-original-cache-control')], ['no-store', 'no-store']);
+        res.headers.entries().filter(([n]) => !['content-type', 'x-only', 'cache-control'].includes(n)), []);
+    eq('reader copy is private', res.headers.get('cache-control'), 'private, no-store');
 }
 
 // ---------- scenario 4: custom endpoints ----------
@@ -256,7 +263,7 @@ section('custom endpoints');
     eq('client body forwarded', res.mosCalls[0].body, '{"email":"x@y.z"}');
     eq('client cookie forwarded', res.mosCalls[0].headers.find((h) => h[0] === 'cookie')[1], 'mos_user_jwt=a.b.c');
     eq('host header stripped', res.mosCalls[0].headers.find((h) => h[0] === 'host'), undefined);
-    eq('proxy version header added', res.mosCalls[0].headers.find((h) => h[0] === 'x-mos-proxy-version')[1], '1.5.1');
+    eq('proxy version header is the worker version', res.mosCalls[0].headers.find((h) => h[0] === 'x-mos-proxy-version')[1], '0.1.0');
     eq('no secret key leaked to endpoint proxy', res.mosCalls[0].headers.find((h) => h[0] === 'authorization'), undefined);
     eq('status passed through', res.status, 200);
     eq('api response headers passed through', res.headers.get('x-endpoint'), 'hit');
@@ -312,9 +319,21 @@ section('existing anon cookie is not re-set');
     eq('cookie re-set (known POC deviation)', res.headers.getAll('set-cookie').includes('mos_anon_id=existing-1; Path=/'), true);
 }
 
+section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
+{
+    let state = fresh();
+    let res = await request(state, { url: '/story', headers: [['cookie', 'theme=dark']] });
+    eq('none unless configured', JSON.parse(res.mosCalls[0].body).http.cookies, undefined);
+
+    state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^wp_ ^theme$' } });
+    res = await request(state, { url: '/story', headers: [['cookie', 'theme=dark%20blue; wp_session=from-reader; other=1; mos_anon_id=a1']] });
+    // The origin sets wp_session=xyz, which wins; the anon cookie the worker sets is not the origin's.
+    eq('matching cookies, decoded, origin wins', JSON.parse(res.mosCalls[0].body).http.cookies, { theme: 'dark blue', wp_session: 'xyz' });
+}
+
 // ---------- scenario 6: gating and fail-open ----------
 
-section('gating');
+section('gating: decisions only for HTML responses, as upstream');
 {
     let state = fresh();
     let res = await request(state, { url: '/assets/app.css' });
@@ -327,11 +346,26 @@ section('gating');
 
     state = fresh();
     await request(state, { method: 'POST', url: '/wp-comments-post.php' });
-    eq('non-GET page: no MOS call', state.calls.length, 0);
+    eq('POST answered with HTML: decided, method is not checked', state.calls.length, 1);
+
+    state = fresh();
+    await request(state, { url: '/old' });
+    eq('HTML redirect: no MOS call', state.calls.length, 0);
+
+    state = fresh({ env: { ...ENV, MOS_IGNORE_PATTERNS: '^/tag/ \\.amp$' } });
+    await request(state, { url: '/tag/news' });
+    await request(state, { url: '/story.amp' });
+    eq('regex ignore patterns: no MOS call', state.calls.length, 0);
+    await request(state, { url: '/tagged-story' });
+    eq('regex ignore patterns: anchored, so /tagged-story is decided', state.calls.length, 1);
+
+    state = fresh();
+    await request(state, { url: '/story.json' });
+    eq('HTML at an asset-looking path: decided, the path is not guessed from', state.calls.length, 1);
 
     state = fresh();
     res = await request(state, { url: '/feed/rss' });
-    eq('non-html origin response: no rules', res.rules.length, 0);
+    eq('non-html response: no MOS call', state.calls.length, 0);
     ok('xml untouched', res.body === '<rss/>');
 }
 
@@ -361,15 +395,30 @@ section('fail-open');
     ok('unconfigured: passthrough', res.body === ORIGIN_HTML);
 }
 
-section('plan header cannot be spoofed');
+// ---------- scenario 7: the cache keeps the origin's page ----------
+
+section('cache: origin rendered once, every reader personalised');
 {
-    const state = fresh({ decisionsFail: true });
-    const res = await request(state, {
-        url: '/story',
-        headers: [['x-mos-plan', JSON.stringify({ a: 'evil', r: [{ o: 'ai', s: 'body', h: '<script>pwn()</script>' }] })]],
+    const state = fresh();
+    const paywall = (tier) => ({ paywall: { metadata: { cssSelector: '.article-body' }, content: { append: [{ type: 'html', content: `<p class="wall">${tier}</p>` }] } } });
+    state.decisions = decisions({ componentBehaviors: paywall('metered') });
+    const first = await request(state, { url: '/story', headers: [['cookie', 'mos_anon_id=reader-a']] });
+    state.decisions = decisions({
+        identity: { identifier: 'reader-b', isAuthenticated: false, authType: 'anonymous', jwtClaims: {} },
+        componentBehaviors: paywall('subscriber'),
     });
-    ok('injected plan stripped', !res.body.includes('pwn()'));
-    eq('no cookie from injected plan', res.headers.getAll('set-cookie'), ['wp_session=xyz; Path=/']);
+    const second = await request(state, { url: '/story', headers: [['cookie', 'mos_anon_id=reader-b']] });
+
+    eq('origin rendered once', state.originHits, 1);
+    eq('second reader served from cache', [first.hitOrigin, second.hitOrigin], [true, false]);
+    eq('one decision per reader', state.calls.length, 2);
+    ok('first reader personalised', first.body.includes('<p class="wall">metered</p>'));
+    ok('second reader personalised', second.body.includes('<p class="wall">subscriber</p>') && !second.body.includes('metered'));
+    eq('second reader gets their own cookie', second.headers.getAll('set-cookie').includes('mos_anon_id=reader-b; Path=/'), true);
+    const cached = state.cache.get('/story');
+    eq('cached copy is the origin page', cached.body, ORIGIN_HTML);
+    eq('cached copy carries no reader cookie or no-store',
+        cached.headers.filter(([n, v]) => (n === 'set-cookie' && v.startsWith('mos_anon_id')) || n === 'cache-control'), []);
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

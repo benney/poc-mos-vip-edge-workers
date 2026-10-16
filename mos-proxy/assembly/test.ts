@@ -1,7 +1,9 @@
 // Test-only entrypoint: exposes the pure logic over an explicit UTF-8 ABI so a Node
 // harness asserts against the compiled AssemblyScript, not a TS re-implementation.
 import { JSON } from "json-as";
-import { readCookie } from "./cookies";
+import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
+import { cookieValue, decodeCookieValue } from "./cookies";
+import { resourceFor } from "./resource";
 import { Config } from "./config";
 import { SurfaceDecisions, buildIdentity } from "./decisions";
 import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
@@ -28,7 +30,7 @@ function setOut(s: string): void {
 }
 
 export function testReadCookie(hPtr: usize, hLen: i32, nPtr: usize, nLen: i32): void {
-  setOut(readCookie(String.UTF8.decodeUnsafe(hPtr, hLen), String.UTF8.decodeUnsafe(nPtr, nLen)));
+  setOut(cookieValue(new Cookies(String.UTF8.decodeUnsafe(hPtr, hLen)), String.UTF8.decodeUnsafe(nPtr, nLen)));
 }
 
 export function testBuildIdentity(aPtr: usize, aLen: i32, jPtr: usize, jLen: i32): void {
@@ -89,4 +91,21 @@ export function testCompileBehavior(pPtr: usize, pLen: i32): void {
 
 export function testStatusAllowsBody(status: i32): i32 {
   return statusAllowsBodyFor(status) ? 1 : 0;
+}
+
+const lines = (s: string): string[] => (s.length == 0 ? [] : s.split("\n"));
+
+export function testDecodeCookie(vPtr: usize, vLen: i32): void {
+  setOut(decodeCookieValue(String.UTF8.decodeUnsafe(vPtr, vLen)));
+}
+
+/** path, newline-separated name=value extras -> resource JSON. */
+export function testResourceFor(pPtr: usize, pLen: i32, ePtr: usize, eLen: i32): void {
+  const extra = new Map<string, string>();
+  const entries = lines(String.UTF8.decodeUnsafe(ePtr, eLen));
+  for (let i = 0; i < entries.length; i++) {
+    const eq = entries[i].indexOf("=");
+    extra.set(entries[i].slice(0, eq), entries[i].slice(eq + 1));
+  }
+  setOut(JSON.stringify(resourceFor(String.UTF8.decodeUnsafe(pPtr, pLen), extra)));
 }

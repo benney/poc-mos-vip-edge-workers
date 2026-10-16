@@ -1,5 +1,6 @@
 // A runtime-neutral implementation of the VIP edge-worker host ABI, enough to drive
-// the real compiled release.wasm through onClientRequest -> origin -> onOriginResponse.
+// the real compiled release.wasm through onClientRequest -> origin -> onOriginResponse,
+// then onClientResponse.
 // No Node built-ins: runs in Node, a browser, or a Web Worker.
 //
 // Wire formats (from the SDK's msgpack.ts header):
@@ -14,6 +15,8 @@ import { constantTimeEq, hmacSha256, jwtVerifyHs256, sha256 } from './crypto.mjs
 const ENC = new TextEncoder();
 const DEC = new TextDecoder();
 const DEC16 = new TextDecoder('utf-16le');
+// The real host caps concurrency, not count; this only stops a runaway worker looping the devkit.
+const MAX_FETCHES_PER_PHASE = 16;
 
 // ---------- msgpack (subset the SDK uses) ----------
 
@@ -107,6 +110,50 @@ export class HeaderMap {
     }
 }
 
+// ---------- regex (host side of the SDK's RegExp) ----------
+// The host runs Rust's `regex` crate; here JS RegExp stands in. The two agree on what
+// workers write in practice (classes, anchors, groups, flags) but not on every edge.
+// Offsets cross the ABI as UTF-8 byte positions.
+
+const REGEX_BAD_PATTERN = -2n;
+
+function compileRegex(source, global = false) {
+    let body = source;
+    let flags = 'du' + (global ? 'g' : '');
+    const inline = /^\(\?([ims]+)\)/.exec(body);
+    if (inline) { flags += inline[1]; body = body.slice(inline[0].length); }
+    try { return new RegExp(body.replaceAll('(?P<', '(?<'), flags); } catch { return null; }
+}
+
+/** Capturing groups in order, by scanning the pattern: null for unnamed ones. */
+function regexGroupNames(source) {
+    const names = [null];
+    let inClass = false;
+    for (let i = 0; i < source.length; i++) {
+        const c = source[i];
+        if (c === '\\') { i++; continue; }
+        if (inClass) { if (c === ']') inClass = false; continue; }
+        if (c === '[') { inClass = true; continue; }
+        if (c !== '(') continue;
+        if (source[i + 1] !== '?') { names.push(null); continue; }
+        const named = /^\(\?P?<([A-Za-z_][A-Za-z0-9_]*)>/.exec(source.slice(i));
+        if (named) names.push(named[1]);
+    }
+    return names;
+}
+
+const byteOffset = (text, index) => ENC.encode(text.slice(0, index)).length;
+
+/** Expands the host's replacement template: ${1}, ${name}, ${0} and $$. */
+function expandTemplate(template, match) {
+    return template.replace(/\$\$|\$\{([^}]*)\}|\$([A-Za-z0-9_]+)/g, (token, braced, bare) => {
+        if (token === '$$') return '$';
+        const key = braced ?? bare;
+        const value = /^\d+$/.test(key) ? match[Number(key)] : match.groups?.[key];
+        return value ?? '';
+    });
+}
+
 export const RULE = {
     0x01: 'insertBefore', 0x02: 'insertAfter', 0x03: 'prependInside', 0x04: 'appendInside',
     0x05: 'replace', 0x06: 'remove', 0x10: 'setAttr', 0x11: 'removeAttr',
@@ -174,12 +221,7 @@ export class EdgeWorkerHost {
                     return h.packedStr(h.env[name]);
                 },
                 fetch(metaPtr, metaLen, bodyPtr, bodyLen) {
-                    // The host allows fetch() only in the client-request phase; any
-                    // other phase gets errorKind "phase_not_allowed".
-                    if (h.phase !== 'client-request') {
-                        return h.packFetchResult(new Writer().array(4).uint(0).pairs([])
-                            .str('phase_not_allowed').str(`fetch() is not available in the ${h.phase} phase`).done(), null);
-                    }
+                    // The host allows fetch() in every phase (SDK main, 2026-10-13).
                     const r = new Reader(new Uint8Array(h.mem, metaPtr, metaLen));
                     r.array();
                     const call = {
@@ -189,15 +231,14 @@ export class EdgeWorkerHost {
                         body: bodyLen > 0 ? h.readUtf8(bodyPtr, bodyLen) : null,
                     };
 
-                    if (h.probing) {
-                        h.pendingFetches.push({ call });
-                        // Probe pass: a benign error makes the worker bail out early rather
-                        // than act on invented data.
+                    const slot = h.replayQueue.shift();
+                    if (!slot) {
+                        // Not resolved yet. Record the first such call; a benign error makes the
+                        // worker bail out rather than act on invented data, and the pass reruns.
+                        if (h.pendingFetches.length === 0) h.pendingFetches.push({ call });
                         return h.packFetchResult(
                             new Writer().array(4).uint(0).pairs([]).str('transport').str('probe').done(), null);
                     }
-                    const slot = h.replayQueue.shift();
-                    if (!slot) throw new Error('fetch replay queue exhausted (nondeterministic worker?)');
                     h.log.push({ type: 'fetch', call, result: slot.result });
                     const res = slot.result;
                     if (res.errorKind) {
@@ -277,6 +318,10 @@ export class EdgeWorkerHost {
                     const b = new Uint8Array(h.mem, bPtr, bLen).slice();
                     return constantTimeEq(a, b) ? 1 : 0;
                 },
+                get_random_values(ptr, len) {
+                    globalThis.crypto.getRandomValues(new Uint8Array(h.mem, ptr, len));
+                    return 0;
+                },
                 jwt_verify_hs256(tokenPtr, tokenLen, secretPtr, secretLen) {
                     const token = str(tokenPtr, tokenLen);
                     const secret = str(secretPtr, secretLen);
@@ -284,6 +329,50 @@ export class EdgeWorkerHost {
                         ? jwtVerifyHs256(token, secret)
                         : jwtVerifyHs256(token, secret, h.now);
                     return claims === null ? -1n : h.packedStr(claims);
+                },
+            },
+            regex: {
+                is_match(pp, pl, sp, sl) {
+                    const re = compileRegex(str(pp, pl));
+                    return re === null ? Number(REGEX_BAD_PATTERN) : (re.test(str(sp, sl)) ? 1 : 0);
+                },
+                captures(pp, pl, sp, sl, startByte) {
+                    const re = compileRegex(str(pp, pl), true);
+                    if (re === null) return REGEX_BAD_PATTERN;
+                    const bytes = new Uint8Array(h.mem, sp, sl).slice();
+                    const text = DEC.decode(bytes);
+                    re.lastIndex = DEC.decode(bytes.subarray(0, startByte)).length;
+                    const m = re.exec(text);
+                    if (m === null) return -1n;
+                    const out = new Uint8Array(m.length * 8);
+                    const dv = new DataView(out.buffer);
+                    m.indices.forEach((span, k) => {
+                        dv.setInt32(k * 8, span ? byteOffset(text, span[0]) : -1, true);
+                        dv.setInt32(k * 8 + 4, span ? byteOffset(text, span[1]) : -1, true);
+                    });
+                    return h.packed(out);
+                },
+                group_names(pp, pl) {
+                    const source = str(pp, pl);
+                    if (compileRegex(source) === null) return REGEX_BAD_PATTERN;
+                    const names = regexGroupNames(source);
+                    const w = new Writer().array(names.length);
+                    for (const name of names) name === null ? w.nil() : w.str(name);
+                    return h.packed(w.done());
+                },
+                replace(pp, pl, sp, sl, rp, rl, limit) {
+                    const re = compileRegex(str(pp, pl), true);
+                    if (re === null) return REGEX_BAD_PATTERN;
+                    const template = str(rp, rl);
+                    let done = 0;
+                    const out = str(sp, sl).replace(re, (...args) => {
+                        const groups = typeof args.at(-1) === 'object' ? args.at(-1) : undefined;
+                        const match = Object.assign(args.slice(0, groups ? -3 : -2), { groups });
+                        if (limit > 0 && done >= limit) return match[0];
+                        done++;
+                        return expandTemplate(template, match);
+                    });
+                    return h.packedStr(out);
                 },
             },
             // In-memory KV and rate limiters. Keys are capped at 64 B and values at
@@ -367,42 +456,37 @@ export class EdgeWorkerHost {
 
     /**
      * Runs a phase. fetch() is synchronous inside wasm but our fetchHandler is async,
-     * so the phase runs twice: a probe pass records the calls, then a replay pass runs
-     * with resolved results.
+     * so the phase reruns once per fetch: each pass replays the results resolved so far
+     * and stops at the first unresolved call. That covers fetches that depend on an
+     * earlier one's response, like posting a fetched page on to an API.
      */
     async runPhase(exportName, meta, body, setup, phase) {
         this.phase = phase;
-        this.pendingFetches = [];
-        this.probing = true;
 
-        // The probe pass really executes the worker, so any host-side writes it makes
-        // would be applied twice. Snapshot the stores and roll back before the replay
-        // pass, so stateful calls land exactly once.
+        // Every pass really executes the worker, so host-side writes from the earlier
+        // passes are rolled back and stateful calls land exactly once.
         const kvSnapshot = new Map(this.kv);
-        const limiterSnapshot = new Map(
-            [...this.limiters].map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]),
-        );
-
-        setup();
-        this.resetArena();
-        this.ex[exportName](this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
-        this.probing = false;
-
-        this.kv = kvSnapshot;
-        this.limiters = limiterSnapshot;
+        const limiterSnapshot = [...this.limiters].map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]);
 
         const resolved = [];
-        for (const pending of this.pendingFetches) {
-            resolved.push({ result: await this.fetchHandler(pending.call) });
-        }
+        for (let pass = 0; pass <= MAX_FETCHES_PER_PHASE; pass++) {
+            this.kv = new Map(kvSnapshot);
+            this.limiters = new Map(limiterSnapshot.map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]));
+            this.replayQueue = [...resolved];
+            this.pendingFetches = [];
 
-        this.replayQueue = resolved;
-        setup();
-        this.resetArena();
-        const out = this.ex[exportName](
-            this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
-        if (this.replayQueue.length) throw new Error('worker made fewer fetches on replay');
-        return this.readOutputStruct(out);
+            setup();
+            this.resetArena();
+            const out = this.ex[exportName](
+                this.put(meta), meta.length, body ? this.put(body) : 0, body ? body.length : 0);
+
+            if (this.pendingFetches.length === 0) {
+                if (this.replayQueue.length) throw new Error('worker made fewer fetches on replay');
+                return this.readOutputStruct(out);
+            }
+            resolved.push({ result: await this.fetchHandler(this.pendingFetches[0].call) });
+        }
+        throw new Error(`worker made more than ${MAX_FETCHES_PER_PHASE} fetches in one phase`);
     }
 
     async clientRequest({ method = 'GET', url = '/', headers = [], body = null }) {
@@ -444,5 +528,29 @@ export class EdgeWorkerHost {
         const r = new Reader(new Uint8Array(this.mem, out.metaPtr, out.metaLen));
         r.array();
         return { status: r.uint(), headers: this.live, rules: this.htmlRules };
+    }
+
+    /**
+     * Runs onClientResponse on a response from the cache or the origin. `snapshot` is the
+     * request before onClientRequest mutated it. The body goes in only when the worker exports
+     * client_response_body; whatever body the worker leaves is returned.
+     */
+    async clientResponse({ status, headers = [], body = null, snapshot }) {
+        const buffered = typeof this.ex.client_response_body === 'function';
+        const meta = new Writer().array(1).uint(status).done();
+        const out = await this.runPhase('on_client_response', meta, buffered && body != null ? ENC.encode(body) : null, () => {
+            this.live = new HeaderMap(headers);
+            this.snapshot = { method: snapshot.method, url: snapshot.url, headers: snapshot.headers instanceof HeaderMap ? snapshot.headers : new HeaderMap(snapshot.headers) };
+            this.responded = { sent: false, status: 0, headers: new HeaderMap(), body: null };
+            this.htmlRules = [];
+        }, 'client-response');
+        const r = new Reader(new Uint8Array(this.mem, out.metaPtr, out.metaLen));
+        r.array();
+        return {
+            status: r.uint(),
+            headers: this.live,
+            rules: this.htmlRules,
+            body: out.bodyLen > 0 ? this.readUtf8(out.bodyPtr, out.bodyLen) : body,
+        };
     }
 }

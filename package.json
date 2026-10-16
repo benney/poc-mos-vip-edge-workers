@@ -19,11 +19,13 @@
         "build:test": "node scripts/build.mjs --test",
         "build:web": "node scripts/build.mjs && node scripts/build-web.mjs",
         "web": "npm run build:web && node server.mjs",
+        "serve": "node scripts/serve.mjs",
         "test": "node scripts/build.mjs --test && node mos-proxy/test.mjs",
         "test:e2e": "node scripts/build.mjs && node mos-proxy/e2e.mjs",
+        "test:whole-body": "node scripts/build.mjs mos-proxy-whole-body && node mos-proxy-whole-body/e2e.mjs",
         "test:web": "npm run build:web && node mos-proxy/smoke.mjs",
         "test:live": "npm run build:web && node mos-proxy/live-check.mjs",
-        "test:all": "npm run test:wire && npm run test:hello && npm run test:crypto && npm run test && npm run test:e2e && npm run test:web",
+        "test:all": "npm run test:wire && npm run test:hello && npm run test:crypto && npm run test && npm run test:e2e && npm run test:whole-body && npm run test:web",
         "hello": "node scripts/build.mjs hello && node scripts/build-web.mjs hello && node server.mjs",
         "test:hello": "node scripts/build.mjs hello && node examples/hello/check.mjs",
         "test:crypto": "node scripts/build.mjs crypto && node examples/crypto/check.mjs",
@@ -32,7 +34,7 @@
         "test:wire": "node scripts/build.mjs wire && node examples/wire/check.mjs"
     },
     "dependencies": {
-        "@automattic/vip-edge-workers-sdk": "0.3.0",
+        "@automattic/vip-edge-workers-sdk": "0.6.0",
         "json-as": "^1.6.0"
     },
     "devDependencies": {

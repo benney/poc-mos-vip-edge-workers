@@ -15,8 +15,9 @@ production CDN proxy, and documents which parts of it the phase model can expres
 
 ```bash
 npm install
-npm run test:all      # 278 assertions across the examples
+npm run test:all      # 323 assertions across the examples
 npm run web           # playground at http://localhost:8787
+npm run serve         # a worker as a local edge in front of a real MOS (see scripts/serve.mjs)
 npm run hello         # playground with the minimal example instead
 ```
 
@@ -29,12 +30,13 @@ npm run hello         # playground with the minimal example instead
 | [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | 121 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 231 assertions. |
+| [`mos-proxy`](mos-proxy)                       | 114 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 239 assertions. |
+| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 111 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
 
-All 27 host functions the SDK declares are implemented — `header.*`, `request.*`,
-`response.*`, `env.*`, `html.*`, `kv.*` and `crypto.*`.
+All 32 host functions SDK 0.6 declares are implemented — `header.*`, `request.*`,
+`response.*`, `env.*`, `html.*`, `kv.*`, `crypto.*` and `regex.*`.
 
 ## Running a worker
 
@@ -71,19 +73,22 @@ new EdgeWorkerHost(wasm, {
 KV and rate limiters are in-memory and honour the documented caps (64 B keys, 10 KiB
 values), so an oversize write fails locally too. `crypto.*` is backed by a pure-JS
 SHA-256 rather than WebCrypto, which is async-only and cannot implement a synchronous
-host call.
+host call; `getRandomValues` is the synchronous exception. `regex.*` runs on JS `RegExp`,
+where the host runs Rust's `regex` crate: they agree on what workers write in practice, and
+the conformance probe's `/__probe/regex` is there to diff the rest.
 
 ## Undocumented behaviour
 
-**`fetch()` is client-request phase only.** Any other phase returns
-`errorKind: "phase_not_allowed"`. If your worker needs a network call whose result
-depends on the origin response, it cannot happen — there is no phase that has both.
+**`fetch()` works in every phase.** Until 2026-10-13 it was client-request only and any
+other phase returned `errorKind: "phase_not_allowed"`. The host lifted that; the change is
+on the SDK's `main` branch, not yet in an npm release. A call can now depend on the
+response, which is what lets both MOS workers decide in `onClientResponse`, after the cache.
 
 **`onOriginResponse` is the only phase that can read a header you set.**
-`resp.request` in `onClientResponse` is the request as it _arrived_, pre-mutation, so a
-header set in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is
-taken at the origin socket and does include it. That asymmetry is the only channel
-between phases, and it is what makes a decide-then-rewrite pipeline possible at all.
+`resp.request` in `onClientResponse` is the request as the client sent it, so a header set
+in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is taken at the
+origin socket and does include it. SDK 0.6 documents this as per-socket snapshots; before
+that it was only observable.
 
 **`HtmlRules` is write-only.** It can insert, replace, remove and set attributes, but it
 cannot read. There is no way to get the value of a `<meta>` tag into your worker. There
@@ -187,6 +192,8 @@ Not verifiable locally:
 - What the host does with an aborted instance. AssemblyScript has no `try`/`catch`, so a
   throw from `install()` aborts — whether that becomes a 500 or fails open is unknown.
 - Cache behaviour, and whether `onOriginResponse` really only runs on a cache miss.
+- Whether `setBodyText` in `onClientResponse` replaces the page without the
+  `client_response_body` marker. The devkit assumes it does.
 - Which selectors the host's lol-html build accepts. This repo pins
   `html-rewriter-wasm@0.4.1`; the host's version may differ.
 
@@ -230,10 +237,10 @@ they do not replace a real-host probe for peak allocation or buffered-body behav
 `test:live` needs Chrome; set `CHROME_PATH` if it isn't found automatically.
 
 One wrinkle worth knowing if you write your own harness: `fetch()` is synchronous inside
-wasm, but a realistic `fetchHandler` is async. `host.mjs` runs each phase twice — a probe
-pass that records the calls, then a replay pass with resolved results. That works when a
-worker's fetch count doesn't depend on responses; a worker that branches on a response
-body would need a different approach.
+wasm, but a realistic `fetchHandler` is async. `host.mjs` reruns the phase once per fetch:
+each pass replays the results resolved so far, and the first unresolved call gets a benign
+error, is recorded, resolved, and the pass reruns. So a fetch can depend on an earlier
+one's response.
 
 ## Layout
 
@@ -247,11 +254,13 @@ web/ui.mjs               playground UI (main thread)
 web/worker.mjs           playground pipeline (Web Worker: host + lol-html)
 scripts/build.mjs        asc build for one example
 scripts/build-web.mjs    esbuild bundle for one example
+scripts/serve.mjs        a worker as a local edge: real fetches, in-memory cache, demo origin
 server.mjs               static server, plus an optional live pass-through
 devkit/crypto.mjs        sync SHA-256/HMAC/JWT backing the crypto host calls
 examples/hello/          minimal worker
 examples/crypto/         host-executed HMAC and JWT
 mos-proxy/               the worker this devkit was built for
+mos-proxy-whole-body/    the same proxy with MOS rewriting the whole page
 examples/conformance/    probe worker for validating the host
 examples/wire/           wire-format conformance against the SDK's codec
 ```
