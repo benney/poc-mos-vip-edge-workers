@@ -226,6 +226,12 @@ section('only uncompressed HTML pages go to MOS');
     const post = fresh();
     await request(post, { method: 'POST', url: '/story' });
     eq('POST answered with HTML: decided, as upstream', post.mosCalls.length, 1);
+    // Not reader pages, so no decision, and their compression is left alone. No ignore lists configured.
+    for (const url of ['/wp-admin/edit.php', '/wp-login.php', '/wp-json/wp/v2/posts', '/xmlrpc.php', '/wp-cron.php', '/wp-includes/js/x', '/wp-content/uploads/2026/x', '/feed/', '/category/news/feed/']) {
+        const s = fresh({ env: { ...ENV, MOS_IGNORE_PREFIXES: '' } });
+        await request(s, { url, headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
+        eq(`WordPress path ${url}: no MOS call, accept-encoding kept`, [s.mosCalls.length, header(s.originCalls[0].headers, 'accept-encoding')], [0, ['br']]);
+    }
     const asset = fresh();
     await request(asset, { url: '/wp-content/style.css', headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
     eq('asset keeps its accept-encoding', header(asset.originCalls[0].headers, 'accept-encoding'), ['br']);

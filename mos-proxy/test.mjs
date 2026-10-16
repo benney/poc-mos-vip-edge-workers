@@ -114,6 +114,12 @@ console.log('\nresource (port of ResourceProvider merging)');
 eq('id is the path', JSON.parse(call(ex.testResourceFor, '/story', '')), { id: '/story' });
 eq('extra fields merged over it', JSON.parse(call(ex.testResourceFor, '/story', 'id=post-42\nsection=sport')), { id: 'post-42', section: 'sport' });
 
+console.log('\nWordPress feeds');
+const feeds = ['/feed', '/feed/', '/feed/rss2/', '/comments/feed/', '/category/news/feed/atom/', '/my-post/feed/'];
+const notFeeds = ['/', '/feedback/', '/feeding-time', '/feed/other/', '/2026/10/my-post/', '/news/feeds/'];
+eq('feed paths', feeds.map((p) => callInt(ex.testIsFeed, p)), feeds.map(() => 1));
+eq('not feeds', notFeeds.map((p) => callInt(ex.testIsFeed, p)), notFeeds.map(() => 0));
+
 console.log('\ndecision sampling buckets');
 const bucket = (id) => callInt(ex.testBucket, id);
 const fnv1a = (s) => { let h = 0x811c9dc5; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0; return h % 100; };

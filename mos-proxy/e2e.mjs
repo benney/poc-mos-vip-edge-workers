@@ -373,6 +373,14 @@ section('MOS_DECISIONS_PERCENT: sticky per reader through the bucket cookie');
 
 section('gating: decisions only for HTML responses, as upstream');
 {
+    // Even answered with HTML, and with no ignore lists configured.
+    const bare = { ...ENV, MOS_IGNORE_PREFIXES: '' };
+    for (const url of ['/wp-admin/edit.php', '/wp-login.php', '/wp-json/wp/v2/posts', '/xmlrpc.php', '/wp-cron.php', '/wp-includes/js/x', '/wp-content/uploads/2026/x', '/feed/', '/category/news/feed/']) {
+        const s = fresh({ env: bare });
+        const r = await request(s, { url });
+        eq(`WordPress path ${url}: no MOS call, untouched`, [s.calls.length, r.headers.get('cache-control')], [0, null]);
+    }
+
     let state = fresh();
     let res = await request(state, { url: '/assets/app.css' });
     eq('static asset: no MOS call', state.calls.length, 0);

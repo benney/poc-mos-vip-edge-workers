@@ -46,7 +46,26 @@ export function looksLikeAsset(path: string): bool {
   return false;
 }
 
+// WordPress paths that are never reader pages: admin, login, REST, XML-RPC, cron, core and theme files.
+const WORDPRESS_PREFIXES: string[] = [
+  "/wp-admin/", "/wp-login.php", "/wp-json/", "/xmlrpc.php", "/wp-cron.php", "/wp-includes/", "/wp-content/",
+];
+const FEED_TYPES: string[] = ["rss", "rss2", "atom", "rdf"];
+
+/** WordPress feeds: `/feed/`, `/comments/feed/`, `/category/news/feed/atom/` and so on. */
+export function isWordPressFeed(path: string): bool {
+  const trimmed = path.endsWith("/") ? path.slice(0, path.length - 1) : path;
+  const segments = trimmed.split("/");
+  const n = segments.length;
+  if (n >= 2 && segments[n - 1] == "feed") return true;
+  return n >= 3 && segments[n - 2] == "feed" && FEED_TYPES.includes(segments[n - 1]);
+}
+
 function isIgnoredPath(cfg: Config, path: string): bool {
+  for (let i = 0; i < WORDPRESS_PREFIXES.length; i++) {
+    if (path.startsWith(WORDPRESS_PREFIXES[i])) return true;
+  }
+  if (isWordPressFeed(path)) return true;
   for (let i = 0; i < cfg.ignorePrefixes.length; i++) {
     if (path.startsWith(cfg.ignorePrefixes[i])) return true;
   }

@@ -103,6 +103,10 @@ missing any one makes the worker pass through untouched.
 | `MOS_DECISIONS_PERCENT` | `100` | Share of readers (0-100) whose pages call MOS; the rest get the page as cached. Sticky per reader: a random token in a `mos_bucket` cookie, hashed to a bucket. Readers without cookies, such as most crawlers, roll per request |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
+WordPress paths that are never reader pages are always skipped, on top of the ignore lists:
+`/wp-admin/`, `/wp-login.php`, `/wp-json/`, `/xmlrpc.php`, `/wp-cron.php`, `/wp-includes/`,
+`/wp-content/`, and feeds (`/feed/`, `/comments/feed/`, `/category/news/feed/atom/` and so on).
+
 ## Live mode
 
 Copy `.env.local.example` at the repo root to `.env.local` and tick **Live MOS** in the
