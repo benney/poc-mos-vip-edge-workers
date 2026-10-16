@@ -6,10 +6,11 @@
 // replacement and page metadata work here, unlike the streaming mos-proxy worker.
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { compileHttpBehavior } from "../../mos-proxy/assembly/behavior";
-import { loadConfig } from "../../mos-proxy/assembly/config";
+import { Config, loadConfig } from "../../mos-proxy/assembly/config";
 import { selectDecisionCookies } from "../../mos-proxy/assembly/cookies";
 import { fetchDecisions, ProxyOrigin } from "../../mos-proxy/assembly/decisions";
 import { buildResource, resourceFor } from "../../mos-proxy/assembly/resource";
+import { sampleReader } from "../../mos-proxy/assembly/sampling";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "../../mos-proxy/assembly/endpoints";
 import { firstIp, mayBePage, wantsDecision } from "../../mos-proxy/assembly/http";
 import { applyHttpOps } from "../../mos-proxy/assembly/rules";
@@ -59,6 +60,15 @@ onClientResponse((resp: Response): void => {
   // The client's request as it arrived, before onClientRequest.
   const req = resp.request;
   if (!wantsDecision(cfg, req, resp) || !isUncompressed(resp)) return;
+  const sample = sampleReader(cfg, req);
+  // Outside MOS_DECISIONS_PERCENT: the page as served.
+  if (sample.inSample) decide(cfg, req, resp);
+  // Last, so the decision neither forwards it as an origin cookie nor replaces it.
+  const bucketCookie = sample.setCookie;
+  if (bucketCookie !== null) resp.headers.append("set-cookie", bucketCookie);
+});
+
+function decide(cfg: Config, req: Request, resp: Response): void {
   const html = resp.text();
   if (html === null) return;
 
@@ -99,4 +109,4 @@ onClientResponse((resp: Response): void => {
 
   // The reader's copy is personal. The cached page underneath it is untouched.
   resp.headers.set("cache-control", "private, no-store");
-});
+}

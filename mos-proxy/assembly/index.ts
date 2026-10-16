@@ -5,10 +5,11 @@
 // page still streams. Endpoint and authenticated routes short-circuit in onClientRequest.
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { compileHttpBehavior } from "./behavior";
-import { loadConfig } from "./config";
+import { Config, loadConfig } from "./config";
 import { selectDecisionCookies } from "./cookies";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { buildResource, resourceFor } from "./resource";
+import { sampleReader } from "./sampling";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
 import { firstIp, wantsDecision } from "./http";
 import { applyHttpOps, applyPlan, compilePlan } from "./rules";
@@ -46,7 +47,15 @@ onClientResponse((resp: Response): void => {
   // The client's request as it arrived, before onClientRequest.
   const req = resp.request;
   if (!wantsDecision(cfg, req, resp)) return;
+  const sample = sampleReader(cfg, req);
+  // Outside MOS_DECISIONS_PERCENT: the page as cached.
+  if (sample.inSample) decide(cfg, req, resp);
+  // Last, so the decision neither forwards it as an origin cookie nor replaces it.
+  const bucketCookie = sample.setCookie;
+  if (bucketCookie !== null) resp.headers.append("set-cookie", bucketCookie);
+});
 
+function decide(cfg: Config, req: Request, resp: Response): void {
   const path = req.path;
   const host = req.headers.get("host");
   const ua = req.headers.get("user-agent");
@@ -89,4 +98,4 @@ onClientResponse((resp: Response): void => {
   }
 
   applyPlan(compilePlan(cfg, decisions));
-});
+}

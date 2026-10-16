@@ -165,6 +165,18 @@ section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
     eq('matching cookies, origin wins', JSON.parse(state.mosCalls[0].body).http.cookies, { theme: 'dark', wp_session: 'xyz' });
 }
 
+section('MOS_DECISIONS_PERCENT: readers outside it get the page without a MOS call');
+{
+    const state = fresh({ env: { ...ENV, MOS_DECISIONS_PERCENT: '0' } });
+    const res = await request(state);
+    eq('no MOS call', state.mosCalls.length, 0);
+    eq('the page as served', [res.body, header(res.headers, 'cache-control')], [ORIGIN_HTML, []]);
+
+    const half = fresh({ env: { ...ENV, MOS_DECISIONS_PERCENT: '50' } });
+    const first = await request(half);
+    ok('50%: a new reader gets a bucket token', header(first.headers, 'set-cookie').some((c) => /^mos_bucket=[0-9a-f]{16};/.test(c)));
+}
+
 section('no transformed body: page served with the http ops');
 {
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }], removeHeaders: ['etag'] } } }) });

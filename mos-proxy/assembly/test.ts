@@ -4,6 +4,7 @@ import { JSON } from "json-as";
 import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { cookieValue, decodeCookieValue } from "./cookies";
 import { resourceFor } from "./resource";
+import { bucketFor } from "./sampling";
 import { Config } from "./config";
 import { SurfaceDecisions, buildIdentity } from "./decisions";
 import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
@@ -108,4 +109,8 @@ export function testResourceFor(pPtr: usize, pLen: i32, ePtr: usize, eLen: i32):
     extra.set(entries[i].slice(0, eq), entries[i].slice(eq + 1));
   }
   setOut(JSON.stringify(resourceFor(String.UTF8.decodeUnsafe(pPtr, pLen), extra)));
+}
+
+export function testBucket(iPtr: usize, iLen: i32): i32 {
+  return bucketFor(String.UTF8.decodeUnsafe(iPtr, iLen));
 }

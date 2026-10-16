@@ -114,6 +114,15 @@ console.log('\nresource (port of ResourceProvider merging)');
 eq('id is the path', JSON.parse(call(ex.testResourceFor, '/story', '')), { id: '/story' });
 eq('extra fields merged over it', JSON.parse(call(ex.testResourceFor, '/story', 'id=post-42\nsection=sport')), { id: 'post-42', section: 'sport' });
 
+console.log('\ndecision sampling buckets');
+const bucket = (id) => callInt(ex.testBucket, id);
+const fnv1a = (s) => { let h = 0x811c9dc5; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193) >>> 0; return h % 100; };
+eq('bucket is FNV-1a of the id, mod 100', ['anon-abc', 'j.w.t', 'x'].map(bucket), ['anon-abc', 'j.w.t', 'x'].map(fnv1a));
+const buckets = Array.from({ length: 2000 }, (_, i) => bucket(`anon-${i}`));
+eq('buckets are 0-99', buckets.every((b) => b >= 0 && b < 100), true);
+const underHalf = buckets.filter((b) => b < 50).length;
+eq('ids spread evenly (40-60% under 50)', underHalf > 800 && underHalf < 1200, true);
+
 console.log('\nidentity (port of buildIdentity)');
 const ident = (a, j) => JSON.parse(call(ex.testBuildIdentity, a, j));
 eq('jwt wins over anon', ident('anon1', 'jwt1'),
@@ -300,6 +309,11 @@ setEnv({ MOS_SURFACE_DECISIONS_COOKIES: '^__session$   ^mos_' });
 eq('decision cookie patterns split on spaces', cfgFields()[11], '^__session$ ^mos_');
 setEnv();
 eq('no decision cookies by default', cfgFields()[11], '');
+eq('decisions percent defaults to 100', cfgFields()[12], '100');
+const percent = (v) => (setEnv({ MOS_DECISIONS_PERCENT: v }), cfgFields()[12]);
+eq('decisions percent parsed and clamped', ['0', '25', ' 50 ', '100', '150', '-5', 'abc', '', '12.5', '99999999999'].map(percent),
+    ['0', '25', '50', '100', '100', '0', '100', '100', '100', '100']);
+setEnv();
 
 setEnv({ MOS_SECRET_KEY: '' });
 eq('empty secret key -> invalid', cfgFields()[0], 'false');

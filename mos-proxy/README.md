@@ -100,6 +100,7 @@ missing any one makes the worker pass through untouched.
 | `MOS_IGNORE_PREFIXES` | none | Comma-separated path prefixes |
 | `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
 | `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
+| `MOS_DECISIONS_PERCENT` | `100` | Share of readers (0-100) whose pages call MOS; the rest get the page as cached. Sticky per reader: a random token in a `mos_bucket` cookie, hashed to a bucket. Readers without cookies, such as most crawlers, roll per request |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 ## Live mode
