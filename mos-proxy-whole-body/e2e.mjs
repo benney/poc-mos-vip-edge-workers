@@ -165,6 +165,18 @@ section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
     eq('matching cookies, origin wins', JSON.parse(state.mosCalls[0].body).http.cookies, { theme: 'dark', wp_session: 'xyz' });
 }
 
+section('MOS_DECISIONS_PERCENT: readers outside it get the page without a MOS call');
+{
+    const state = fresh({ env: { ...ENV, MOS_DECISIONS_PERCENT: '0' } });
+    const res = await request(state);
+    eq('no MOS call', state.mosCalls.length, 0);
+    eq('the page as served', [res.body, header(res.headers, 'cache-control')], [ORIGIN_HTML, []]);
+
+    const half = fresh({ env: { ...ENV, MOS_DECISIONS_PERCENT: '50' } });
+    const first = await request(half);
+    ok('50%: a new reader gets a bucket token', header(first.headers, 'set-cookie').some((c) => /^mos_bucket=[0-9a-f]{16};/.test(c)));
+}
+
 section('no transformed body: page served with the http ops');
 {
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }], removeHeaders: ['etag'] } } }) });
@@ -214,6 +226,12 @@ section('only uncompressed HTML pages go to MOS');
     const post = fresh();
     await request(post, { method: 'POST', url: '/story' });
     eq('POST answered with HTML: decided, as upstream', post.mosCalls.length, 1);
+    // Not reader pages, so no decision, and their compression is left alone. No ignore lists configured.
+    for (const url of ['/wp-admin/edit.php', '/wp-login.php', '/wp-json/wp/v2/posts', '/xmlrpc.php', '/wp-cron.php', '/wp-includes/js/x', '/wp-content/uploads/2026/x', '/feed/', '/category/news/feed/']) {
+        const s = fresh({ env: { ...ENV, MOS_IGNORE_PREFIXES: '' } });
+        await request(s, { url, headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
+        eq(`WordPress path ${url}: no MOS call, accept-encoding kept`, [s.mosCalls.length, header(s.originCalls[0].headers, 'accept-encoding')], [0, ['br']]);
+    }
     const asset = fresh();
     await request(asset, { url: '/wp-content/style.css', headers: [['host', 'site.test'], ['accept-encoding', 'br']] });
     eq('asset keeps its accept-encoding', header(asset.originCalls[0].headers, 'accept-encoding'), ['br']);

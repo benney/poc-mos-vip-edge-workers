@@ -331,10 +331,56 @@ section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
     eq('matching cookies, decoded, origin wins', JSON.parse(res.mosCalls[0].body).http.cookies, { theme: 'dark blue', wp_session: 'xyz' });
 }
 
+section('MOS_DECISIONS_PERCENT: sticky per reader through the bucket cookie');
+{
+    let state = fresh({ env: { ...ENV, MOS_DECISIONS_PERCENT: '0' } });
+    let res = await request(state, { url: '/story' });
+    eq('0%: no MOS call', res.mosCalls.length, 0);
+    eq('0%: the page as cached, no bucket cookie', [res.status, res.headers.get('cache-control'), res.headers.getAll('set-cookie')], [200, null, ['wp_session=xyz; Path=/']]);
+
+    const env = { ...ENV, MOS_DECISIONS_PERCENT: '50' };
+    const bucketCookie = (r) => r.headers.getAll('set-cookie').find((c) => c.startsWith('mos_bucket='));
+
+    state = fresh({ env });
+    res = await request(state, { url: '/story' });
+    ok('a new reader gets a bucket token', /^mos_bucket=[0-9a-f]{16}; Path=\/; Max-Age=31536000; SameSite=Lax$/.test(bucketCookie(res) ?? ''));
+
+    const called = async (token) => {
+        const s = fresh({ env });
+        const r = await request(s, { url: '/story', headers: [['cookie', `mos_bucket=${token}`]] });
+        return [s.calls.length === 1, bucketCookie(r) === undefined];
+    };
+    const tokens = Array.from({ length: 40 }, (_, i) => `token-${i}`);
+    const first = await Promise.all(tokens.map(called));
+    const again = await Promise.all(tokens.map(called));
+    eq('a reader with a token keeps it and gets the same answer every time', again, first);
+    ok('no new token for a reader who has one', first.every(([, kept]) => kept));
+    ok('some readers in, some out', first.some(([inSample]) => inSample) && first.some(([inSample]) => !inSample));
+
+    // A new reader who lands in the rollout: their token is not an origin cookie and outlives a cookie reset.
+    let inSample;
+    for (let i = 0; i < 30 && !inSample; i++) {
+        const s = fresh({ env: { ...env, MOS_SURFACE_DECISIONS_COOKIES: '^mos_' } });
+        s.decisions = decisions({ surfaceBehavior: { http: { cookies: ['reset=1'] } } });
+        const r = await request(s, { url: '/story' });
+        if (s.calls.length === 1) inSample = { s, r };
+    }
+    eq('the token is not forwarded as an origin cookie', JSON.parse(inSample.s.calls[0].body).http.cookies, undefined);
+    eq('and survives a cookie reset', inSample.r.headers.getAll('set-cookie').map((c) => c.split('=')[0]), ['reset', 'mos_bucket']);
+}
+
 // ---------- scenario 6: gating and fail-open ----------
 
 section('gating: decisions only for HTML responses, as upstream');
 {
+    // Even answered with HTML, and with no ignore lists configured.
+    const bare = { ...ENV, MOS_IGNORE_PREFIXES: '' };
+    for (const url of ['/wp-admin/edit.php', '/wp-login.php', '/wp-json/wp/v2/posts', '/xmlrpc.php', '/wp-cron.php', '/wp-includes/js/x', '/wp-content/uploads/2026/x', '/feed/', '/category/news/feed/']) {
+        const s = fresh({ env: bare });
+        const r = await request(s, { url });
+        eq(`WordPress path ${url}: no MOS call, untouched`, [s.calls.length, r.headers.get('cache-control')], [0, null]);
+    }
+
     let state = fresh();
     let res = await request(state, { url: '/assets/app.css' });
     eq('static asset: no MOS call', state.calls.length, 0);

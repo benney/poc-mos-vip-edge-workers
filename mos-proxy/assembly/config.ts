@@ -21,6 +21,7 @@ export class Config {
   ignorePrefixes: string[] = [];
   ignorePatterns: string[] = [];
   decisionCookiePatterns: string[] = [];
+  decisionsPercent: i32 = 100;
   authRoutes: AuthRoute[] = [];
   anonFallback: bool = true;
   /**
@@ -42,8 +43,25 @@ export class Config {
       + this.mosEndpointsPrefix + "\n" + this.anonCookie + "\n" + this.jwtCookie + "\n"
       + this.anonFallback.toString() + "\n" + routes + "\n" + this.ignorePrefixes.join("|")
       + "\n" + this.includeHttp.toString() + "\n" + this.ignorePatterns.join(" ")
-      + "\n" + this.decisionCookiePatterns.join(" ");
+      + "\n" + this.decisionCookiePatterns.join(" ") + "\n" + this.decisionsPercent.toString();
   }
+}
+
+/** A whole number, clamped to 0-100. Unset or not a number means every request. */
+function parsePercent(value: string | null): i32 {
+  if (value === null) return 100;
+  let s = value.trim();
+  const negative = s.startsWith("-");
+  if (negative) s = s.slice(1);
+  if (s.length == 0) return 100;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) return 100;
+  }
+  if (negative) return 0;
+  if (s.length > 3) return 100;
+  const n = I32.parseInt(s);
+  return n > 100 ? 100 : n;
 }
 
 function splitSpaces(value: string | null): string[] {
@@ -151,6 +169,8 @@ export function loadConfig(): Config {
 
   // Space-separated cookie-name regexes, as the upstream proxy's surfaceDecisionsCookies.
   c.decisionCookiePatterns = splitSpaces(getenv("MOS_SURFACE_DECISIONS_COOKIES"));
+
+  c.decisionsPercent = parsePercent(getenv("MOS_DECISIONS_PERCENT"));
 
   c.valid = true;
   return c;

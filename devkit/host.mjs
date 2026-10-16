@@ -176,6 +176,8 @@ export class EdgeWorkerHost {
         this.fetchHandler = opts.fetchHandler ?? (() => ({ errorKind: 'transport', errorMessage: 'no handler' }));
         this.log = [];
         this.pendingFetches = [];
+        this.randomLog = [];
+        this.randomIndex = 0;
         this.phase = null;
         // Host-backed stores, shared across requests as they are on the edge.
         this.kv = opts.kv ?? new Map();
@@ -319,7 +321,10 @@ export class EdgeWorkerHost {
                     return constantTimeEq(a, b) ? 1 : 0;
                 },
                 get_random_values(ptr, len) {
-                    globalThis.crypto.getRandomValues(new Uint8Array(h.mem, ptr, len));
+                    // Replayed across a phase's passes, so a rerun makes the same choices.
+                    const i = h.randomIndex++;
+                    if (h.randomLog[i]?.length !== len) h.randomLog[i] = globalThis.crypto.getRandomValues(new Uint8Array(len));
+                    new Uint8Array(h.mem, ptr, len).set(h.randomLog[i]);
                     return 0;
                 },
                 jwt_verify_hs256(tokenPtr, tokenLen, secretPtr, secretLen) {
@@ -469,7 +474,9 @@ export class EdgeWorkerHost {
         const limiterSnapshot = [...this.limiters].map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]);
 
         const resolved = [];
+        this.randomLog = [];
         for (let pass = 0; pass <= MAX_FETCHES_PER_PHASE; pass++) {
+            this.randomIndex = 0;
             this.kv = new Map(kvSnapshot);
             this.limiters = new Map(limiterSnapshot.map(([name, l]) => [name, { rps: l.rps, buckets: new Map(l.buckets) }]));
             this.replayQueue = [...resolved];
