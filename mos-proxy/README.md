@@ -58,6 +58,8 @@ the decision needs.
 | Custom endpoints | `<prefix>/rest?q` proxied to the API, client method/headers/body forwarded |
 | Authenticated routes | Client JSON body merged with resolved identity, called with the configured token |
 | HTTP-level behaviour | Header replace/add/remove, cookies, status override, full-body replacement |
+| Cookies to decisions | `MOS_SURFACE_DECISIONS_COOKIES`: matching request cookies, then the origin's Set-Cookie values, sent decoded as `http.cookies` |
+| Resource fields | `buildResource` in `assembly/resource.ts` adds or overrides fields over `{ id: path }`, like the upstream `ResourceProvider`. Edit it per site; string values only |
 | Fail-open | Every failure is a checked return; an unconfigured or erroring worker passes through |
 
 `content.remove` becomes `replace(selector, '')` plus outside inserts, since `before` and
@@ -97,6 +99,7 @@ missing any one makes the worker pass through untouched.
 | `MOS_INJECT_SCRIPT_URL` | none | Injected into `<head>` |
 | `MOS_IGNORE_PREFIXES` | none | Comma-separated path prefixes |
 | `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
+| `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 ## Live mode

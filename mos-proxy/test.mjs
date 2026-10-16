@@ -105,6 +105,15 @@ eq('absent -> empty', cookie('a=1', 'mos_anon_id'), '');
 eq('empty header -> empty', cookie('', 'mos_anon_id'), '');
 eq('no substring match', cookie('xmos_anon_id=nope', 'mos_anon_id'), '');
 
+console.log('\ncookie values (port of the cookie package decode)');
+const jsDecode = (v) => { if (!v.includes('%')) return v; try { return decodeURIComponent(v); } catch { return v; } };
+const decodeCases = ['plain', 'a%20b', '%E2%82%AC', 'caf%C3%A9 au lait', '%', '%4', '%zz', '%C3', '%C0%AF', '%ED%A0%80', '%F4%90%80%80', 'x%F0%9F%98%80y', '%E2%82', '100%', 'é%20x'];
+eq('decodes as decodeURIComponent, keeping malformed values', decodeCases.map((v) => call(ex.testDecodeCookie, v)), decodeCases.map(jsDecode));
+
+console.log('\nresource (port of ResourceProvider merging)');
+eq('id is the path', JSON.parse(call(ex.testResourceFor, '/story', '')), { id: '/story' });
+eq('extra fields merged over it', JSON.parse(call(ex.testResourceFor, '/story', 'id=post-42\nsection=sport')), { id: 'post-42', section: 'sport' });
+
 console.log('\nidentity (port of buildIdentity)');
 const ident = (a, j) => JSON.parse(call(ex.testBuildIdentity, a, j));
 eq('jwt wins over anon', ident('anon1', 'jwt1'),
@@ -287,6 +296,10 @@ eq('ignore prefixes split on commas', f[8], '/wp-admin|/wp-login.php');
 eq('ignore patterns split on spaces', f[10], '^/feed(/|$) \\.amp$');
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST />/api/v1/root' });
 eq('root matchPath is valid', cfgFields()[7], 'POST />/api/v1/root');
+setEnv({ MOS_SURFACE_DECISIONS_COOKIES: '^__session$   ^mos_' });
+eq('decision cookie patterns split on spaces', cfgFields()[11], '^__session$ ^mos_');
+setEnv();
+eq('no decision cookies by default', cfgFields()[11], '');
 
 setEnv({ MOS_SECRET_KEY: '' });
 eq('empty secret key -> invalid', cfgFields()[0], 'false');

@@ -263,7 +263,7 @@ section('custom endpoints');
     eq('client body forwarded', res.mosCalls[0].body, '{"email":"x@y.z"}');
     eq('client cookie forwarded', res.mosCalls[0].headers.find((h) => h[0] === 'cookie')[1], 'mos_user_jwt=a.b.c');
     eq('host header stripped', res.mosCalls[0].headers.find((h) => h[0] === 'host'), undefined);
-    eq('proxy version header added', res.mosCalls[0].headers.find((h) => h[0] === 'x-mos-proxy-version')[1], '1.5.1');
+    eq('proxy version header is the worker version', res.mosCalls[0].headers.find((h) => h[0] === 'x-mos-proxy-version')[1], '0.1.0');
     eq('no secret key leaked to endpoint proxy', res.mosCalls[0].headers.find((h) => h[0] === 'authorization'), undefined);
     eq('status passed through', res.status, 200);
     eq('api response headers passed through', res.headers.get('x-endpoint'), 'hit');
@@ -317,6 +317,18 @@ section('existing anon cookie is not re-set');
     eq('existing anon id sent', sent.identity.anonymousIdentifier, 'existing-1');
     // This port always re-sets the cookie; the upstream proxy only sets it on mint.
     eq('cookie re-set (known POC deviation)', res.headers.getAll('set-cookie').includes('mos_anon_id=existing-1; Path=/'), true);
+}
+
+section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
+{
+    let state = fresh();
+    let res = await request(state, { url: '/story', headers: [['cookie', 'theme=dark']] });
+    eq('none unless configured', JSON.parse(res.mosCalls[0].body).http.cookies, undefined);
+
+    state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^wp_ ^theme$' } });
+    res = await request(state, { url: '/story', headers: [['cookie', 'theme=dark%20blue; wp_session=from-reader; other=1; mos_anon_id=a1']] });
+    // The origin sets wp_session=xyz, which wins; the anon cookie the worker sets is not the origin's.
+    eq('matching cookies, decoded, origin wins', JSON.parse(res.mosCalls[0].body).http.cookies, { theme: 'dark blue', wp_session: 'xyz' });
 }
 
 // ---------- scenario 6: gating and fail-open ----------

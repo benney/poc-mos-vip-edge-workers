@@ -88,6 +88,9 @@ export class DecisionsHttpPayload {
   userAgent: string = "";
   clientIP: string = "";
   referer: string = "";
+  // Cookies matching MOS_SURFACE_DECISIONS_COOKIES; left out when none match.
+  @omitnull()
+  cookies: Map<string, string> | null = null;
   proxyOrigin: ProxyOrigin = new ProxyOrigin();
 }
 
@@ -103,27 +106,24 @@ export class IdentityPayload {
 export class DecisionsRequest {
   surfaceSlug: string = "";
   identity: IdentityPayload = new IdentityPayload();
-  // No `resource.meta`: page metadata needs a read of the origin HTML, which
-  // the edge worker cannot do in the only phase where fetch() is allowed.
-  resource: ResourcePayload = new ResourcePayload();
+  // `{ id: path }` plus buildResource's fields. No `meta`: the streaming worker cannot read
+  // the page, and in whole-body mode MOS fills it.
+  resource: Map<string, string> = new Map<string, string>();
   // Omitted entirely for publishable tokens — see Config.includeHttp.
   @omitnull()
   http: DecisionsHttpPayload | null = null;
 }
 
-@json
-export class ResourcePayload {
-  id: string = "";
-}
-
 export const PROXY_VERSION_HEADER: string = "x-mos-proxy-version";
+// This worker's own version (package.json): it is a port, not a release of the upstream proxy.
+export const PROXY_VERSION: string = "0.1.0";
 export const PROXY_CLIENT_HEADER: string = "x-mos-proxy-client";
 export const PROXY_CLIENT: string = "vip-edge-worker-poc";
 export const WHOLE_BODY_PROXY_CLIENT: string = "vip-edge-worker-whole-body-poc";
 
 /** Proxy identification headers sent on every API call. */
 export function setProxyHeaders(headers: Headers, client: string = PROXY_CLIENT): void {
-  headers.set(PROXY_VERSION_HEADER, "1.5.1");
+  headers.set(PROXY_VERSION_HEADER, PROXY_VERSION);
   headers.set(PROXY_CLIENT_HEADER, client);
 }
 
@@ -156,23 +156,25 @@ export function buildIdentity(anonId: string, userJwt: string, fallback: bool): 
 export function fetchDecisions(
   cfg: Config,
   identity: IdentityPayload,
-  path: string,
+  resource: Map<string, string>,
   fullUrl: string,
   userAgent: string,
   clientIP: string,
   referer: string,
+  cookies: Map<string, string> | null,
   origin: ProxyOrigin | null = null,
 ): SurfaceDecisions | null {
   const body = new DecisionsRequest();
   body.surfaceSlug = cfg.surfaceSlug;
   body.identity = identity;
-  body.resource.id = path;
+  body.resource = resource;
   if (cfg.includeHttp) {
     const http = new DecisionsHttpPayload();
     http.url = fullUrl;
     http.userAgent = userAgent;
     http.clientIP = clientIP;
     http.referer = referer;
+    http.cookies = cookies;
     if (origin !== null) http.proxyOrigin = origin;
     body.http = http;
   }

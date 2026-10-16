@@ -6,7 +6,9 @@
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { compileHttpBehavior } from "./behavior";
 import { loadConfig } from "./config";
+import { selectDecisionCookies } from "./cookies";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
+import { buildResource, resourceFor } from "./resource";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
 import { firstIp, wantsDecision } from "./http";
 import { applyHttpOps, applyPlan, compilePlan } from "./rules";
@@ -56,11 +58,12 @@ onClientResponse((resp: Response): void => {
   const decisions = fetchDecisions(
     cfg,
     identityFromRequest(cfg, req),
-    path,
+    resourceFor(path, buildResource(req, resp)),
     "https://" + (host === null ? "" : host) + req.url,
     ua === null ? "" : ua,
     xff === null ? "" : firstIp(xff),
     referer === null ? "" : referer,
+    selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, resp.headers.getSetCookie()),
     origin,
   );
   if (decisions === null) return; // fail open: the page as cached

@@ -154,6 +154,17 @@ section('cache: origin rendered once, every reader gets their own page');
     eq('cached copy is the origin page', [...state.cache.values()].map((r) => r.body), [ORIGIN_HTML]);
 }
 
+section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
+{
+    let state = fresh();
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark']] });
+    eq('none unless configured', JSON.parse(state.mosCalls[0].body).http.cookies, undefined);
+
+    state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^wp_ ^theme$' } });
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark; wp_session=from-reader']] });
+    eq('matching cookies, origin wins', JSON.parse(state.mosCalls[0].body).http.cookies, { theme: 'dark', wp_session: 'xyz' });
+}
+
 section('no transformed body: page served with the http ops');
 {
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }], removeHeaders: ['etag'] } } }) });

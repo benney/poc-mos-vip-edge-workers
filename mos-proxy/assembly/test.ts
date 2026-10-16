@@ -2,7 +2,8 @@
 // harness asserts against the compiled AssemblyScript, not a TS re-implementation.
 import { JSON } from "json-as";
 import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
-import { cookieValue } from "./cookies";
+import { cookieValue, decodeCookieValue } from "./cookies";
+import { resourceFor } from "./resource";
 import { Config } from "./config";
 import { SurfaceDecisions, buildIdentity } from "./decisions";
 import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
@@ -90,4 +91,21 @@ export function testCompileBehavior(pPtr: usize, pLen: i32): void {
 
 export function testStatusAllowsBody(status: i32): i32 {
   return statusAllowsBodyFor(status) ? 1 : 0;
+}
+
+const lines = (s: string): string[] => (s.length == 0 ? [] : s.split("\n"));
+
+export function testDecodeCookie(vPtr: usize, vLen: i32): void {
+  setOut(decodeCookieValue(String.UTF8.decodeUnsafe(vPtr, vLen)));
+}
+
+/** path, newline-separated name=value extras -> resource JSON. */
+export function testResourceFor(pPtr: usize, pLen: i32, ePtr: usize, eLen: i32): void {
+  const extra = new Map<string, string>();
+  const entries = lines(String.UTF8.decodeUnsafe(ePtr, eLen));
+  for (let i = 0; i < entries.length; i++) {
+    const eq = entries[i].indexOf("=");
+    extra.set(entries[i].slice(0, eq), entries[i].slice(eq + 1));
+  }
+  setOut(JSON.stringify(resourceFor(String.UTF8.decodeUnsafe(pPtr, pLen), extra)));
 }

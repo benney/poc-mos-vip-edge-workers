@@ -7,7 +7,9 @@
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { compileHttpBehavior } from "../../mos-proxy/assembly/behavior";
 import { loadConfig } from "../../mos-proxy/assembly/config";
+import { selectDecisionCookies } from "../../mos-proxy/assembly/cookies";
 import { fetchDecisions, ProxyOrigin } from "../../mos-proxy/assembly/decisions";
+import { buildResource, resourceFor } from "../../mos-proxy/assembly/resource";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "../../mos-proxy/assembly/endpoints";
 import { firstIp, mayBePage, wantsDecision } from "../../mos-proxy/assembly/http";
 import { applyHttpOps } from "../../mos-proxy/assembly/rules";
@@ -72,11 +74,12 @@ onClientResponse((resp: Response): void => {
   const decisions = fetchDecisions(
     cfg,
     identityFromRequest(cfg, req),
-    path,
+    resourceFor(path, buildResource(req, resp)),
     "https://" + (host === null ? "" : host) + req.url,
     ua === null ? "" : ua,
     xff === null ? "" : firstIp(xff),
     referer === null ? "" : referer,
+    selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, resp.headers.getSetCookie()),
     origin,
   );
   if (decisions === null) return; // fail open: the page as served
