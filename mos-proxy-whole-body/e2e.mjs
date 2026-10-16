@@ -48,7 +48,7 @@ function wordpress(state, { url, headers }) {
     };
 }
 
-/** Fake MOS: echoes what firecrest does with http.proxyOrigin.body via state.respond. */
+/** Fake MOS: echoes what MOS does with http.proxyOrigin.body via state.respond. */
 function mos(state, { method, url, headers, body }) {
     state.mosCalls.push({ method, url, headers, body });
     const path = url.replace('https://api.mos.test', '');

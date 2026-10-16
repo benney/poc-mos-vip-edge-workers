@@ -38,10 +38,9 @@ the origin renders a page once per cache lifetime. Every page view still makes o
 call carrying the page.
 
 MOS fills `resource.meta` from the page and applies `componentBehaviors` with the same
-transforms as the Cloudflare proxy, `replaceRange` included. That needs firecrest's
-`feature/proxy-origin-body`, whole-body mode switched on for the org in sudo (MOS answers
-403 otherwise), and a secret (`sk_`) key, because `http` is secret-key only. The field is
-undocumented.
+transforms as the Cloudflare proxy, `replaceRange` included. That needs whole-body mode
+switched on for the org (MOS answers 403 otherwise) and a secret (`sk_`) key, because
+`http` is secret-key only. The field is undocumented.
 
 ## Config
 

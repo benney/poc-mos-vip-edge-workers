@@ -11,7 +11,7 @@ npm run test:web   # 26 assertions against the browser bundle
 npm run test:live  # 22 assertions against a stand-in org
 npm run web        # playground at http://localhost:8787
 
-# As a local edge in front of a demo article, against a real MOS (e.g. a local firecrest)
+# As a local edge in front of a demo article, against a real MOS (e.g. a local MOS stack)
 node scripts/build.mjs mos-proxy
 MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=articles MOS_SECRET_KEY=sk_... npm run serve
 ```
