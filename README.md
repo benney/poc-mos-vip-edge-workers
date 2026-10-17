@@ -84,6 +84,15 @@ other phase returned `errorKind: "phase_not_allowed"`. The host lifted that; the
 on the SDK's `main` branch, not yet in an npm release. A call can now depend on the
 response, which is what lets both MOS workers decide in `onClientResponse`, after the cache.
 
+**The SDK's body markers don't match the runtime's.** A worker gets a phase's body only if
+it exports that phase's marker, but the SDK exports `client_response_body` and friends while
+the runtime looks for `needs_client_response_body` (`on_client_response_body` before
+edge-workers `6c106196`, 2026-10-14). Neither runtime name has ever matched, so on VIP
+`req.body` and `resp.body` stay null and `text()` returns null, as if no marker were exported.
+Every worker here that reads a body exports both runtime names as well, and the devkit
+buffers a body only for those names, so a worker relying on the SDK's markers alone fails
+locally the way it does on VIP. Found on a real deploy of `mos-proxy-whole-body`, 2026-10-18.
+
 **`onOriginResponse` is the only phase that can read a header you set.**
 `resp.request` in `onClientResponse` is the request as the client sent it, so a header set
 in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is taken at the

@@ -192,6 +192,16 @@ export class EdgeWorkerHost {
         return this;
     }
 
+    /**
+     * Whether the host buffers this phase's body, by the runtime's marker names rather than
+     * the SDK's: `needs_<phase>_body` (edge-workers 6c106196, 2026-10-14) or `on_<phase>_body`
+     * before it. The SDK's own `<phase>_body` exports match neither, so they don't count.
+     */
+    needsBody(phase) {
+        return typeof this.ex[`needs_${phase}_body`] === 'function'
+            || typeof this.ex[`on_${phase}_body`] === 'function';
+    }
+
     get mem() { return this.ex.memory.buffer; }
     resetArena() { this.arenaOff = 0; }
     put(bytes) {
@@ -498,7 +508,8 @@ export class EdgeWorkerHost {
 
     async clientRequest({ method = 'GET', url = '/', headers = [], body = null }) {
         const meta = new Writer().array(2).str(method).str(url).done();
-        const out = await this.runPhase('on_client_request', meta, body == null ? null : ENC.encode(body), () => {
+        const buffered = this.needsBody('client_request');
+        const out = await this.runPhase('on_client_request', meta, buffered && body != null ? ENC.encode(body) : null, () => {
             this.live = new HeaderMap(headers);
             this.snapshot = null;
             this.responded = { sent: false, status: 0, headers: new HeaderMap(), body: null };
@@ -540,10 +551,10 @@ export class EdgeWorkerHost {
     /**
      * Runs onClientResponse on a response from the cache or the origin. `snapshot` is the
      * request before onClientRequest mutated it. The body goes in only when the worker exports
-     * client_response_body; whatever body the worker leaves is returned.
+     * the runtime's client response body marker; whatever body the worker leaves is returned.
      */
     async clientResponse({ status, headers = [], body = null, snapshot }) {
-        const buffered = typeof this.ex.client_response_body === 'function';
+        const buffered = this.needsBody('client_response');
         const meta = new Writer().array(1).uint(status).done();
         const out = await this.runPhase('on_client_response', meta, buffered && body != null ? ENC.encode(body) : null, () => {
             this.live = new HeaderMap(headers);
