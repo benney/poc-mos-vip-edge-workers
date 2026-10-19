@@ -11,6 +11,11 @@ export {
   client_request_body,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
+// The runtime's body marker names, which the SDK's don't match: needs_ since
+// edge-workers 6c106196 (2026-10-14), on_ before it. See the README.
+export function needs_client_request_body(): void {}
+export function on_client_request_body(): void {}
+
 const SIGNATURE_HEADER = "x-payload-signature";
 
 onClientRequest((req: Request): void => {
