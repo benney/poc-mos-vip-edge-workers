@@ -41,6 +41,9 @@
         "esbuild": "^0.28.2",
         "html-rewriter-wasm": "0.4.1"
     },
+    "config": {
+        "portedCoreVersion": "1.7.0"
+    },
     "engines": {
         "node": ">=22"
     }

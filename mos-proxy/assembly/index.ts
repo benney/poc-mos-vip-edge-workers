@@ -9,9 +9,9 @@ import { selectDecisionCookies } from "./cookies";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { buildResource, resourceFor } from "./resource";
 import { sampleReader } from "./sampling";
-import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
-import { firstIp, mayBePage, wantsDecision } from "./http";
-import { applyHttpOps, compileHttpBehavior } from "./behavior";
+import { handleAuthenticatedRoute, handleCustomEndpoint, identityForDecision } from "./endpoints";
+import { clientIpFrom, mayBePage, wantsDecision } from "./http";
+import { applyHttpOps, compileHttpBehavior, statusAllowsBody } from "./behavior";
 
 export {
   alloc,
@@ -25,13 +25,13 @@ export {
 
 // The runtime's body marker names, which the SDK's don't match: needs_ since
 // edge-workers 6c106196 (2026-10-14), on_ before it. Without these VIP never buffers
-// the page and resp.text() is null. See the README.
+// the page and resp.text() is null. See mos-proxy/README.md.
 export function needs_client_request_body(): void {}
 export function needs_client_response_body(): void {}
 export function on_client_request_body(): void {}
 export function on_client_response_body(): void {}
 
-/** MOS can only read an uncompressed page; a compressed one is served as it is. */
+/** MOS can only read an uncompressed page; a compressed one is served as it is (D7). */
 function isUncompressed(resp: Response): bool {
   const encoding = resp.headers.get("content-encoding");
   return encoding === null || encoding.length == 0 || encoding.toLowerCase() == "identity";
@@ -39,7 +39,7 @@ function isUncompressed(resp: Response): bool {
 
 onClientRequest((req: Request): void => {
   const cfg = loadConfig();
-  if (!cfg.valid) return; // unconfigured: pass through untouched
+  if (!cfg.valid) return; // unconfigured: pass through untouched (D21)
 
   const path = req.path;
   const host = req.headers.get("host");
@@ -67,7 +67,7 @@ onClientResponse((resp: Response): void => {
   const req = resp.request;
   if (!wantsDecision(cfg, req, resp) || !isUncompressed(resp)) return;
   const sample = sampleReader(cfg, req);
-  // Outside MOS_DECISIONS_PERCENT: the page as served.
+  // Outside MOS_DECISIONS_PERCENT (D4): the page as served.
   if (sample.inSample) decide(cfg, req, resp);
   // Last, so the decision neither forwards it as an origin cookie nor replaces it.
   const bucketCookie = sample.setCookie;
@@ -89,19 +89,19 @@ function decide(cfg: Config, req: Request, resp: Response): void {
   const referer = req.headers.get("referer");
   const decisions = fetchDecisions(
     cfg,
-    identityFromRequest(cfg, req),
+    identityForDecision(cfg, req.cookies, resp.headers.getSetCookie()),
     resourceFor(path, buildResource(req, resp)),
     "https://" + (host === null ? "" : host) + req.url,
-    ua === null ? "" : ua,
-    xff === null ? "" : firstIp(xff),
-    referer === null ? "" : referer,
+    ua,
+    clientIpFrom(xff),
+    referer,
     selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, resp.headers.getSetCookie()),
     origin,
   );
-  if (decisions === null) return; // fail open: the page as served
+  if (decisions === null) return; // fail open: the page as served (D12)
 
   // Identity is persisted before the behaviour ops, matching the upstream stage order,
-  // so a `cookies` replacement in surfaceBehavior overrides it.
+  // so a `cookies` replacement in surfaceBehavior overrides it. Re-set whenever MOS returns one (D3).
   const identifier = decisions.identity.identifier;
   if (identifier.length > 0) resp.headers.append("set-cookie", cfg.anonCookie + "=" + identifier + "; Path=/");
 
@@ -111,8 +111,10 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     const status = applyHttpOps(behavior.ops, resp.headers);
     if (status != 0) resp.status = <u16>status;
     if (behavior.hasBody) resp.setBodyText(behavior.body);
+    // Core nulls the body whenever the final status cannot carry one.
+    if (!statusAllowsBody(<i32>resp.status)) resp.setBodyText("");
   }
 
-  // The reader's copy is personal. The cached page underneath it is untouched.
+  // The reader's copy is personal (D8). The cached page underneath it is untouched.
   resp.headers.set("cache-control", "private, no-store");
 }

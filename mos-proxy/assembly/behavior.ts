@@ -92,7 +92,7 @@ export function compileHttpBehavior(raw: JSON.Raw | null): HttpBehavior | null {
 
   if (present.has("status") && fields.status != 0) ops.st = fields.status; // truthy, as upstream
 
-  // statusText is accepted and ignored: this host does not send it on the wire.
+  // statusText is accepted and ignored: this host does not send it on the wire (D15).
 
   if (present.has("body")) {
     out.hasBody = true;

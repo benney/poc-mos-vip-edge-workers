@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import { EdgeWorkerHost } from '../devkit/host.mjs';
 
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const WASM = readFileSync(new URL('../build/mos-proxy/release.wasm', import.meta.url));
 
 const ENV = {
@@ -43,7 +44,7 @@ function wordpress(state, { url, headers }) {
     if (url.endsWith('.css')) return { status: 200, headers: [['content-type', 'text/css']], body: 'body{}' };
     return {
         status: state.originStatus ?? 200,
-        headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/']],
+        headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"abc"'], ['set-cookie', 'wp_session=xyz; Path=/'], ...(state.originSetCookies ?? [])],
         body: state.originHtml ?? ORIGIN_HTML,
     };
 }
@@ -54,10 +55,19 @@ function mos(state, { method, url, headers, body }) {
     const path = url.replace('https://api.mos.test', '');
     if (path === '/api/v1/surface-decisions') {
         if (state.mosFail) return { errorKind: 'timeout', errorMessage: 'upstream slow' };
+        if (state.decisionsStatus && state.decisionsStatus !== 200) {
+            const error = { status: 'error', message: 'nope', statusCode: state.decisionsStatus };
+            return { status: state.decisionsStatus, headers: [['content-type', 'application/json']], body: JSON.stringify(error) };
+        }
         const request = JSON.parse(body);
         return { status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify(state.respond(request)) };
     }
-    if (path.startsWith('/api/v1/envs/')) return { status: 200, headers: [['content-type', 'application/json']], body: '{"endpoint":true}' };
+    if (path.startsWith('/api/v1/envs/')) {
+        const echo = { proxied: path, method, echo: body ? JSON.parse(body) : null };
+        return { status: 200, headers: [['content-type', 'application/json'], ['x-endpoint', 'hit']], body: JSON.stringify(echo) };
+    }
+    if (path === '/api/v1/checkout') return { status: 201, headers: [['content-type', 'application/json']], body: JSON.stringify({ ok: true, received: JSON.parse(body) }) };
+    if (path === '/api/v1/access-checks') return { status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify({ ok: true, received: JSON.parse(body) }) };
     return { status: 404, headers: [], body: '{}' };
 }
 
@@ -76,6 +86,12 @@ async function request(state, { method = 'GET', url = '/story', headers = [['hos
         },
     }).init();
 
+    // The devkit hands back the input body when the worker's is empty; the output struct says
+    // whether the worker emptied it on purpose.
+    let output = null;
+    const readOutputStruct = host.readOutputStruct.bind(host);
+    host.readOutputStruct = (ptr) => (output = readOutputStruct(ptr));
+
     const phase1 = await host.clientRequest({ method, url, headers, body });
     if (phase1.shortCircuited) return { ...phase1, hitOrigin: false };
 
@@ -93,7 +109,8 @@ async function request(state, { method = 'GET', url = '/story', headers = [['hos
         body: stored.body,
         snapshot: { method, url, headers },
     });
-    return { shortCircuited: false, status: phase2.status, headers: phase2.headers, body: phase2.body, hitOrigin };
+    const emptied = output.bodyLen === 0 && output.bodyPtr !== 0;
+    return { shortCircuited: false, status: phase2.status, headers: phase2.headers, body: emptied ? '' : phase2.body, hitOrigin };
 }
 
 // Fetch calls carry header pairs; responses come back as the devkit's HeaderMap.
@@ -132,7 +149,7 @@ section('page view: the served page goes to MOS, transformed page comes back');
     eq('sent origin status and page', [sent.http.proxyOrigin.status, sent.http.proxyOrigin.body], [200, ORIGIN_HTML]);
     eq('and nothing else in proxyOrigin', Object.keys(sent.http.proxyOrigin).sort(), ['body', 'status']);
     eq('left resource.meta for MOS to read from the page', sent.resource, { id: '/story' });
-    eq('identifies as the whole-body client', header(state.mosCalls[0].headers, 'x-mos-proxy-client'), ['vip-edge-worker-whole-body-poc']);
+    eq('identifies as the whole-body client (D11)', header(state.mosCalls[0].headers, 'x-mos-proxy-client'), ['vip-edge-worker-whole-body-poc']);
 
     eq('origin status', res.status, 200);
     eq('transformed page', res.body, PAYWALLED_HTML);
@@ -253,6 +270,275 @@ section('a large page');
     const ms = performance.now() - started;
     ok(`${(big.length / 1024 / 1024).toFixed(1)} MB page round-trips intact`, res.body === big.replace('Free para.', 'FREE'));
     console.log(`       ${ms.toFixed(0)} ms in the local host (encode, MOS JSON parse, decode)`);
+}
+
+const sentBody = (call) => JSON.parse(call.body);
+const setCookieNames = (res) => header(res.headers, 'set-cookie').map((c) => c.split('=')[0]);
+const mosDecision = (id) => ({ identifier: id, isAuthenticated: false, authType: 'anonymous', jwtClaims: {} });
+
+section('decisions call: URL, method, auth, slug, resource, mint');
+{
+    const state = fresh();
+    await request(state);
+    const call = state.mosCalls[0];
+    eq('surface-decisions URL', call.url, 'https://api.mos.test/api/v1/surface-decisions');
+    eq('POST with the secret key as Bearer', [call.method, header(call.headers, 'authorization')], ['POST', ['Bearer sk_live_ab12cd']]);
+    const sent = sentBody(call);
+    eq('surface slug', sent.surfaceSlug, 'news');
+    eq('resource id is the path', sent.resource.id, '/story');
+    eq('mints an identity when there is no cookie, with no other identity keys', sent.identity, { createAnonymousIdentifier: true });
+    eq('absent userAgent, clientIP and referer are left out', Object.keys(sent.http).sort(), ['proxyOrigin', 'url']);
+    eq('http.url is built from the host', sent.http.url, 'https://site.test/story');
+    eq('reports the ported core version', header(call.headers, 'x-mos-proxy-version'), [pkg.config.portedCoreVersion]);
+}
+
+section('surfaceBehavior status 304 override drops the body');
+{
+    const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { status: 304, body: 'ignored' } } }) });
+    const res = await request(state);
+    eq('304 applied, body dropped', [res.status, res.body], [304, '']);
+}
+
+section('surfaceBehavior ops: cookie order, headers, status');
+{
+    const state = fresh({
+        respond: () => decisions({
+            surfaceBehavior: { http: { status: 451, addHeaders: [{ name: 'x-mos-region', value: 'blocked' }], removeHeaders: ['etag'], addCookies: ['mos_geo=eu; Path=/'] } },
+        }),
+    });
+    const res = await request(state);
+    eq('status overridden', res.status, 451);
+    eq('header added, etag removed', [header(res.headers, 'x-mos-region'), header(res.headers, 'etag')], [['blocked'], []]);
+    eq('origin cookie, then anon, then addCookies', header(res.headers, 'set-cookie'), ['wp_session=xyz; Path=/', 'mos_anon_id=anon-wb-1; Path=/', 'mos_geo=eu; Path=/']);
+    eq('page untouched without a body', res.body, ORIGIN_HTML);
+}
+
+section('surfaceBehavior headers replacement wipes origin headers');
+{
+    const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { headers: { 'content-type': 'text/html', 'x-only': 'this' } } } }) });
+    const res = await request(state);
+    eq('origin etag gone', header(res.headers, 'etag'), []);
+    eq('replacement header present', header(res.headers, 'x-only'), ['this']);
+    // The set is rebuilt after the identity cookie is appended, as in the core stage order.
+    eq('replacement drops the anon cookie', header(res.headers, 'set-cookie'), []);
+    eq('no origin headers survive the replacement',
+        res.headers.entries().filter(([n]) => !['content-type', 'x-only', 'cache-control'].includes(n)), []);
+    eq('cache-control is set after the replacement', header(res.headers, 'cache-control'), ['private, no-store']);
+}
+
+section('custom endpoints: full request and response');
+{
+    const state = fresh();
+    const res = await request(state, {
+        method: 'POST',
+        url: '/mos-endpoints/subscribe?plan=gold',
+        headers: [['content-type', 'application/json'], ['cookie', 'mos_user_jwt=a.b.c'], ['host', 'site.test']],
+        body: '{"email":"x@y.z"}',
+    });
+    const call = state.mosCalls[0];
+
+    ok('short-circuited', res.shortCircuited);
+    eq('origin never contacted', state.originCalls.length, 0);
+    eq('exactly one MOS call', state.mosCalls.length, 1);
+    eq('rewritten to envs/endpoints with query', call.url, 'https://api.mos.test/api/v1/envs/live_ab12cd/endpoints/subscribe?plan=gold');
+    eq('method forwarded', call.method, 'POST');
+    eq('client body forwarded', call.body, '{"email":"x@y.z"}');
+    eq('client cookie forwarded', header(call.headers, 'cookie'), ['mos_user_jwt=a.b.c']);
+    eq('host header stripped', header(call.headers, 'host'), []);
+    eq('no authorization header is added', header(call.headers, 'authorization'), []);
+    eq('x-mos-key carries the key as PublicBearer', header(call.headers, 'x-mos-key'), ['PublicBearer sk_live_ab12cd']);
+    eq('reports the ported core version', header(call.headers, 'x-mos-proxy-version'), [pkg.config.portedCoreVersion]);
+    eq('status passed through', res.status, 200);
+    eq('api response headers passed through', header(res.headers, 'x-endpoint'), ['hit']);
+    eq('api body passed through', JSON.parse(res.body).proxied, '/api/v1/envs/live_ab12cd/endpoints/subscribe?plan=gold');
+    eq('api saw the client json body', JSON.parse(res.body).echo, { email: 'x@y.z' });
+}
+
+section('authenticated route with JWT');
+{
+    const state = fresh();
+    const res = await request(state, {
+        method: 'POST',
+        url: '/wp-json/mos/checkout',
+        headers: [['content-type', 'application/json'], ['cookie', 'mos_user_jwt=head.body.sig; other=1'], ['user-agent', 'Mozilla/5.0'], ['x-forwarded-for', '203.0.113.9, 10.0.0.1'], ['referer', 'https://site.test/story'], ['host', 'site.test']],
+        body: '{"plan":"gold","qty":2}',
+    });
+    const call = state.mosCalls[0];
+
+    ok('short-circuited', res.shortCircuited);
+    eq('origin never contacted', state.originCalls.length, 0);
+    eq('called the mapped MOS path', call.url, 'https://api.mos.test/api/v1/checkout');
+    eq('secret key sent as PublicBearer', header(call.headers, 'authorization'), ['PublicBearer sk_live_ab12cd']);
+    eq('reports the ported core version', header(call.headers, 'x-mos-proxy-version'), [pkg.config.portedCoreVersion]);
+
+    const sent = sentBody(call);
+    eq('client body merged', [sent.plan, sent.qty], ['gold', 2]);
+    eq('JWT passed through', sent.identity.userJwt, 'head.body.sig');
+    eq('JWT identity carries the fallback flag and nothing else', sent.identity, { userJwt: 'head.body.sig', createAnonymousIdentifierFallback: true });
+    eq('client ip is the first xff hop (D10)', sent.http.clientIP, '203.0.113.9');
+    eq('user agent forwarded', sent.http.userAgent, 'Mozilla/5.0');
+    eq('referer forwarded', sent.http.referer, 'https://site.test/story');
+    eq('full url built from host', sent.http.url, 'https://site.test/wp-json/mos/checkout');
+    eq('api status passed through', res.status, 201);
+    eq('api body passed through', JSON.parse(res.body).received.plan, 'gold');
+}
+
+section('JWT identity on the decisions call');
+{
+    const state = fresh();
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_user_jwt=j.w.t; mos_anon_id=existing-1']] });
+    const sent = sentBody(state.mosCalls[0]);
+    eq('JWT wins over anon id', [sent.identity.userJwt, sent.identity.anonymousIdentifier ?? null], ['j.w.t', null]);
+}
+
+section('existing anon cookie');
+{
+    const state = fresh({ respond: () => decisions({ identity: mosDecision('existing-1') }) });
+    const res = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=existing-1']] });
+    eq('existing anon id sent', sentBody(state.mosCalls[0]).identity.anonymousIdentifier, 'existing-1');
+    // The port re-sets it on every decision that returns an identifier; core only on a mint (D3).
+    eq('cookie re-set (D3)', header(res.headers, 'set-cookie').includes('mos_anon_id=existing-1; Path=/'), true);
+}
+
+section('cookies forwarded to decisions are decoded');
+{
+    const state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^wp_ ^theme$' } });
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark%20blue; wp_session=from-reader; other=1; mos_anon_id=a1']] });
+    eq('matching cookies, decoded, origin wins', sentBody(state.mosCalls[0]).http.cookies, { theme: 'dark blue', wp_session: 'xyz' });
+}
+
+section('MOS_DECISIONS_PERCENT: sticky per reader through the bucket cookie (D4)');
+{
+    const env = { ...ENV, MOS_DECISIONS_PERCENT: '50' };
+    const bucketCookie = (res) => header(res.headers, 'set-cookie').find((c) => c.startsWith('mos_bucket='));
+
+    const called = async (token) => {
+        const s = fresh({ env });
+        const r = await request(s, { headers: [['host', 'site.test'], ['cookie', `mos_bucket=${token}`]] });
+        return [s.mosCalls.length === 1, bucketCookie(r) === undefined];
+    };
+    const tokens = Array.from({ length: 40 }, (_, i) => `token-${i}`);
+    const first = await Promise.all(tokens.map(called));
+    const again = await Promise.all(tokens.map(called));
+    eq('a reader with a token keeps it and gets the same answer every time', again, first);
+    ok('no new token for a reader who has one', first.every(([, kept]) => kept));
+    ok('some readers in, some out', first.some(([inSample]) => inSample) && first.some(([inSample]) => !inSample));
+
+    // A new reader who lands in the rollout: the token is not an origin cookie and outlives a cookie reset.
+    let inSample;
+    for (let i = 0; i < 30 && !inSample; i++) {
+        const s = fresh({ env: { ...env, MOS_SURFACE_DECISIONS_COOKIES: '^mos_' }, respond: () => decisions({ surfaceBehavior: { http: { cookies: ['reset=1'] } } }) });
+        const r = await request(s);
+        if (s.mosCalls.length === 1) inSample = { s, r };
+    }
+    ok('a new reader landed in the rollout', inSample);
+    eq('the token is not forwarded as an origin cookie', sentBody(inSample.s.mosCalls[0]).http.cookies, undefined);
+    eq('and survives a cookie reset', setCookieNames(inSample.r), ['reset', 'mos_bucket']);
+}
+
+section('ignore patterns are regexes, anchored by the pattern');
+{
+    const state = fresh({ env: { ...ENV, MOS_IGNORE_PATTERNS: '^/tag/ \\.amp$' } });
+    await request(state, { url: '/tag/news' });
+    await request(state, { url: '/story.amp' });
+    eq('matching paths: no MOS call', state.mosCalls.length, 0);
+    await request(state, { url: '/tagged-story' });
+    eq('/tagged-story is not matched by ^/tag/, so it is decided', state.mosCalls.length, 1);
+}
+
+section('gating by response, not by path guess');
+{
+    let state = fresh();
+    await request(state, { url: '/story.json' });
+    eq('HTML at an asset-looking path is decided (the path guess only picks accept-encoding, D7)', state.mosCalls.length, 1);
+
+    state = fresh();
+    const res = await request(state, { url: '/assets/app.css' });
+    eq('static asset: no MOS call, untouched', [state.mosCalls.length, res.body], [0, 'body{}']);
+}
+
+section('fail open on a MOS API error');
+{
+    for (const decisionsStatus of [500, 403]) {
+        const state = fresh({ decisionsStatus });
+        const res = await request(state);
+        eq(`API ${decisionsStatus}: the page as served`, [res.status, res.body, header(res.headers, 'set-cookie'), header(res.headers, 'cache-control')], [200, ORIGIN_HTML, ['wp_session=xyz; Path=/'], []]);
+    }
+}
+
+section('partial env passes through');
+{
+    const state = fresh({ env: { MOS_HOST: 'https://api.mos.test' } });
+    const res = await request(state);
+    eq('incomplete config: no MOS call, page untouched', [state.mosCalls.length, res.body], [0, ORIGIN_HTML]);
+    const endpoint = await request(state, { url: '/mos-endpoints/hello' });
+    eq('and custom endpoints are not routed', [endpoint.shortCircuited, state.mosCalls.length], [false, 0]);
+}
+
+section('custom endpoints: request context header');
+{
+    const state = fresh();
+    await request(state, { url: '/mos-endpoints/hello', headers: [['host', 'site.test'], ['cookie', 'mos_user_jwt=a.b.c; mos_anon_id=ignored']] });
+    eq('identity from the request cookies, empty client metadata',
+        header(state.mosCalls[0].headers, 'x-mos-endpoint-request-context'), ['{"identity":{"userJwt":"a.b.c","createAnonymousIdentifierFallback":true},"clientMetadata":{}}']);
+
+    const minted = fresh();
+    await request(minted, { url: '/mos-endpoints/hello' });
+    eq('a reader with no cookies mints',
+        header(minted.mosCalls[0].headers, 'x-mos-endpoint-request-context'), ['{"identity":{"createAnonymousIdentifier":true},"clientMetadata":{}}']);
+
+    const forged = fresh();
+    await request(forged, {
+        url: '/mos-endpoints/hello',
+        headers: [['host', 'site.test'], ['x-mos-key', 'PublicBearer forged'], ['x-mos-endpoint-request-context', '{"identity":{"userJwt":"forged"}}'], ['x-mos-proxy-version', '9.9.9']],
+    });
+    const headers = forged.mosCalls[0].headers;
+    eq('client copies of the key and context header are overwritten', [header(headers, 'x-mos-key'), header(headers, 'x-mos-endpoint-request-context')],
+        [['PublicBearer sk_live_ab12cd'], ['{"identity":{"createAnonymousIdentifier":true},"clientMetadata":{}}']]);
+    eq('so is the version header', header(headers, 'x-mos-proxy-version'), [pkg.config.portedCoreVersion]);
+}
+
+section('default authenticated routes');
+{
+    const state = fresh();
+    const res = await request(state, {
+        method: 'POST',
+        url: '/mos-api/access-checks',
+        headers: [['content-type', 'application/json'], ['host', 'site.test']],
+        body: '{"resourceId":"r1"}',
+    });
+    const call = state.mosCalls[0];
+    eq('POST /mos-api/access-checks reaches /api/v1/access-checks', [res.shortCircuited, call.url], [true, 'https://api.mos.test/api/v1/access-checks']);
+    eq('with PublicBearer and the secret key', header(call.headers, 'authorization'), ['PublicBearer sk_live_ab12cd']);
+    eq('client body and minted identity merged', [sentBody(call).resourceId, sentBody(call).identity], ['r1', { createAnonymousIdentifier: true }]);
+
+    const get = fresh();
+    const page = await request(get, { url: '/mos-api/access-checks' });
+    eq('a GET is not a route: it goes to the origin as a page', [page.shortCircuited, get.originCalls.length], [false, 1]);
+}
+
+section('identity from the origin Set-Cookie');
+{
+    const state = fresh({ originSetCookies: [['set-cookie', 'mos_user_jwt=origin.jwt; Path=/']] });
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=req-anon; mos_user_jwt=req.jwt']] });
+    eq('the origin jwt is the identity, the request cookies are ignored',
+        sentBody(state.mosCalls[0]).identity, { userJwt: 'origin.jwt', createAnonymousIdentifierFallback: true });
+
+    const custom = fresh({ originSetCookies: [['set-cookie', 'mos_user_jwt=origin.jwt; Path=/']] });
+    await request(custom, { url: '/mos-endpoints/hello', headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=req-anon']] });
+    eq('custom endpoints use the request cookies only',
+        header(custom.mosCalls[0].headers, 'x-mos-endpoint-request-context'), ['{"identity":{"anonymousIdentifier":"req-anon"},"clientMetadata":{}}']);
+}
+
+section('no-body statuses');
+{
+    const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { status: 204 } } }) });
+    const res = await request(state);
+    eq('a 204 override gives an empty body, even with no body key', [res.status, res.body], [204, '']);
+
+    const kept = fresh({ respond: () => decisions({ surfaceBehavior: { http: { status: 402 } } }) });
+    const paid = await request(kept);
+    eq('a 402 override keeps the page', [paid.status, paid.body], [402, ORIGIN_HTML]);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -1,8 +1,9 @@
-// Surface-decisions API: json-as schemas + the fetch. componentBehaviors is not modelled:
+// Surface-decisions API: json-as schemas + the fetch. componentBehaviors is not modelled (D2):
 // MOS applies it server-side, and json-as skips keys the schema does not name.
 import { JSON } from "json-as";
 import { fetch, Headers, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { Config } from "./config";
+import { PORTED_CORE_VERSION } from "./version";
 
 @json
 export class DecisionIdentity {
@@ -37,68 +38,86 @@ export class SurfaceDecisions {
 export class ProxyOrigin {
   // The cached or origin status; the response phase knows it.
   status: i32 = 0;
-  // MOS applies componentBehaviors to this page and returns it in surfaceBehavior.http.body.
+  // MOS applies componentBehaviors to this page and returns it in surfaceBehavior.http.body (D1).
   @omitnull()
   body: string | null = null;
 }
 
+// userAgent, clientIP and referer are left out when the request has none, as core does.
 @json
 export class HttpPayload {
   url: string = "";
-  userAgent: string = "";
-  clientIP: string = "";
-  referer: string = "";
+  @omitnull()
+  userAgent: string | null = null;
+  @omitnull()
+  clientIP: string | null = null;
+  @omitnull()
+  referer: string | null = null;
 }
 
 @json
 export class DecisionsHttpPayload {
   url: string = "";
-  userAgent: string = "";
-  clientIP: string = "";
-  referer: string = "";
+  @omitnull()
+  userAgent: string | null = null;
+  @omitnull()
+  clientIP: string | null = null;
+  @omitnull()
+  referer: string | null = null;
   // Cookies matching MOS_SURFACE_DECISIONS_COOKIES; left out when none match.
   @omitnull()
   cookies: Map<string, string> | null = null;
   proxyOrigin: ProxyOrigin = new ProxyOrigin();
 }
 
+// Only the keys that apply are sent: one of the three shapes core's `Identity` allows.
 @json
 export class IdentityPayload {
+  @omitif((self: IdentityPayload) => !self.createAnonymousIdentifier)
   createAnonymousIdentifier: bool = false;
+  @omitnull()
   anonymousIdentifier: string | null = null;
+  @omitnull()
   userJwt: string | null = null;
+  @omitif((self: IdentityPayload) => !self.createAnonymousIdentifierFallback)
   createAnonymousIdentifierFallback: bool = false;
+}
+
+/** The `x-mos-endpoint-request-context` header value: identity plus client metadata (always empty here, D16). */
+@json
+export class EndpointRequestContext {
+  identity: IdentityPayload = new IdentityPayload();
+  clientMetadata: Map<string, string> = new Map<string, string>();
 }
 
 @json
 export class DecisionsRequest {
   surfaceSlug: string = "";
   identity: IdentityPayload = new IdentityPayload();
-  // `{ id: path }` plus buildResource's fields. No `meta`: MOS fills it from the page.
+  // `{ id: path }` plus buildResource's fields. No `meta`: MOS fills it from the page (D2).
   resource: Map<string, string> = new Map<string, string>();
-  // Omitted entirely for publishable tokens — see Config.includeHttp.
+  // Omitted entirely for publishable tokens, see Config.includeHttp (D9).
   @omitnull()
   http: DecisionsHttpPayload | null = null;
 }
 
 export const PROXY_VERSION_HEADER: string = "x-mos-proxy-version";
-// This worker's own version (package.json): it is a port, not a release of the upstream proxy.
-export const PROXY_VERSION: string = "0.1.0";
 export const PROXY_CLIENT_HEADER: string = "x-mos-proxy-client";
+// Fixed descriptors, where core sends a runtime one (D11).
 export const PROXY_CLIENT: string = "vip-edge-worker-poc";
 export const WHOLE_BODY_PROXY_CLIENT: string = "vip-edge-worker-whole-body-poc";
 
 /** Proxy identification headers sent on every API call. */
 export function setProxyHeaders(headers: Headers, client: string = PROXY_CLIENT): void {
-  headers.set(PROXY_VERSION_HEADER, PROXY_VERSION);
+  headers.set(PROXY_VERSION_HEADER, PORTED_CORE_VERSION);
   headers.set(PROXY_CLIENT_HEADER, client);
 }
 
-/** Authenticated MOS API call: JSON + secret key + proxy identification. */
-export function mosApiHeaders(cfg: Config, client: string = PROXY_CLIENT): Headers {
+/** Authenticated MOS API call: JSON + secret key + proxy identification. Decisions use Bearer, routes PublicBearer. */
+export function mosApiHeaders(cfg: Config, client: string = PROXY_CLIENT, scheme: string = "Bearer"): Headers {
   const headers = new Headers();
   headers.set("content-type", "application/json");
-  headers.set("authorization", "Bearer " + cfg.mosSecretKey);
+  headers.set("authorization", scheme + " " + cfg.mosSecretKey);
   setProxyHeaders(headers, client);
   return headers;
 }
@@ -125,9 +144,9 @@ export function fetchDecisions(
   identity: IdentityPayload,
   resource: Map<string, string>,
   fullUrl: string,
-  userAgent: string,
-  clientIP: string,
-  referer: string,
+  userAgent: string | null,
+  clientIP: string | null,
+  referer: string | null,
   cookies: Map<string, string> | null,
   origin: ProxyOrigin | null = null,
 ): SurfaceDecisions | null {
@@ -155,7 +174,7 @@ export function fetchDecisions(
     body: payload,
   });
 
-  // No try/catch in AS — every failure mode is a checked return instead.
+  // No try/catch in AS, so every failure mode is a checked return. Malformed JSON aborts (D12).
   if (resp.isError()) return null;
   if (!resp.ok) return null;
   const text = resp.text();

@@ -7,6 +7,7 @@ import { resourceFor } from "./resource";
 import { bucketFor } from "./sampling";
 import { isWordPressFeed } from "./http";
 import { buildIdentity } from "./decisions";
+import { PORTED_CORE_VERSION } from "./version";
 
 // --runtime stub never frees or moves, so dataStart pointers stay valid.
 const keep: Uint8Array[] = [];
@@ -27,6 +28,10 @@ function setOut(s: string): void {
   keep.push(b);
   outPtrV = b.dataStart;
   outLenV = b.byteLength;
+}
+
+export function testPortedCoreVersion(): void {
+  setOut(PORTED_CORE_VERSION);
 }
 
 export function testReadCookie(hPtr: usize, hLen: i32, nPtr: usize, nLen: i32): void {
@@ -63,10 +68,14 @@ export function testMergeBody(bPtr: usize, bLen: i32, cPtr: usize, cLen: i32, uP
   ));
 }
 
-import { compileBehaviorSummary, statusAllowsBodyFor } from "./testsupport";
+import { compileBehaviorSummary, identityForDecisionJson, statusAllowsBodyFor } from "./testsupport";
 
 export function testCompileBehavior(pPtr: usize, pLen: i32): void {
   setOut(compileBehaviorSummary(String.UTF8.decodeUnsafe(pPtr, pLen)));
+}
+
+export function testIdentityForDecision(cPtr: usize, cLen: i32, sPtr: usize, sLen: i32): void {
+  setOut(identityForDecisionJson(String.UTF8.decodeUnsafe(cPtr, cLen), String.UTF8.decodeUnsafe(sPtr, sLen)));
 }
 
 export function testStatusAllowsBody(status: i32): i32 {

@@ -1,7 +1,8 @@
 // Node harness: instantiates the compiled test.wasm, stubs the host imports, and
 // asserts the shared modules (config, cookies, endpoints, behavior, identity, sampling).
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const wasm = readFileSync(new URL('../build/mos-proxy/test.wasm', import.meta.url));
 let inst;
 let envMap = {};
@@ -66,6 +67,12 @@ const eq = (name, actual, expected) => {
     else { fail++; console.log(`  FAIL ${name}\n       expected ${e}\n       actual   ${a}`); }
 };
 
+console.log('\nported core version');
+eq('the worker reports the version in package.json config', call(ex.testPortedCoreVersion), pkg.config.portedCoreVersion);
+const divergencesPath = new URL('./DIVERGENCES.md', import.meta.url);
+eq('DIVERGENCES.md names the same core version',
+    existsSync(divergencesPath) && readFileSync(divergencesPath, 'utf8').includes(`\`@monetizationos/proxy\` ${pkg.config.portedCoreVersion}`), true);
+
 console.log('\ncookies');
 const cookie = (h, n) => call(ex.testReadCookie, h, n);
 eq('reads a cookie', cookie('a=1; mos_anon_id=abc123; b=2', 'mos_anon_id'), 'abc123');
@@ -100,12 +107,27 @@ eq('ids spread evenly (40-60% under 50)', underHalf > 800 && underHalf < 1200, t
 
 console.log('\nidentity (port of buildIdentity)');
 const ident = (a, j) => JSON.parse(call(ex.testBuildIdentity, a, j));
-eq('jwt wins over anon', ident('anon1', 'jwt1'),
-    { createAnonymousIdentifier: false, anonymousIdentifier: null, userJwt: 'jwt1', createAnonymousIdentifierFallback: true });
-eq('anon when no jwt', ident('anon1', ''),
-    { createAnonymousIdentifier: false, anonymousIdentifier: 'anon1', userJwt: null, createAnonymousIdentifierFallback: false });
-eq('mint when neither', ident('', ''),
-    { createAnonymousIdentifier: true, anonymousIdentifier: null, userJwt: null, createAnonymousIdentifierFallback: false });
+// Only the keys that apply are sent, as core's Identity union has it.
+eq('jwt wins over anon', ident('anon1', 'jwt1'), { userJwt: 'jwt1', createAnonymousIdentifierFallback: true });
+eq('anon when no jwt', ident('anon1', ''), { anonymousIdentifier: 'anon1' });
+eq('mint when neither', ident('', ''), { createAnonymousIdentifier: true });
+
+// Core appends these after the configured routes.
+const DEFAULT_ROUTES = ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates']
+    .map((n) => `POST /mos-api/${n}>/api/v1/${n}`);
+const routesWith = (...configured) => [...configured, ...DEFAULT_ROUTES].join('|');
+
+console.log('\nidentity from the origin response (port of getExistingCookies)');
+setEnv();
+const decisionIdentity = (cookies, setCookies = []) => JSON.parse(call(ex.testIdentityForDecision, cookies, setCookies.join('\n')));
+eq('request cookies when the origin sets neither', decisionIdentity('mos_anon_id=req-anon', ['wp_session=x; Path=/']), { anonymousIdentifier: 'req-anon' });
+eq('origin jwt beats request cookies', decisionIdentity('mos_anon_id=req-anon', ['mos_user_jwt=origin.jwt; Path=/']),
+    { userJwt: 'origin.jwt', createAnonymousIdentifierFallback: true });
+eq('origin anon replaces the request anon', decisionIdentity('mos_anon_id=req-anon', ['mos_anon_id=origin-anon; Path=/']), { anonymousIdentifier: 'origin-anon' });
+eq('either origin cookie hides the request jwt', decisionIdentity('mos_user_jwt=req.jwt', ['mos_anon_id=origin-anon']), { anonymousIdentifier: 'origin-anon' });
+eq('an origin cookie with an empty value still counts as set', decisionIdentity('mos_anon_id=req-anon', ['mos_anon_id=; Max-Age=0']), { createAnonymousIdentifier: true });
+eq('values are percent-decoded', decisionIdentity('mos_anon_id=a%20b'), { anonymousIdentifier: 'a b' });
+eq('and so are origin values', decisionIdentity('', ['mos_user_jwt=x%2By; Path=/']), { userJwt: 'x+y', createAnonymousIdentifierFallback: true });
 
 console.log('\nconfig from env vars');
 setEnv();
@@ -125,11 +147,11 @@ eq('test env key', cfgFields()[2], 'test_zz99');
 // The API rejects `http` unless the key is a secret one.
 eq('sk_ key includes http', cfgFields()[9], 'true');
 setEnv({ MOS_SECRET_KEY: 'pk_preview_abc123' });
-eq('pk_ token omits http', cfgFields()[9], 'false');
+eq('pk_ token omits http (D9)', cfgFields()[9], 'false');
 setEnv();
 
 setEnv({ MOS_ENVIRONMENT: 'live_override' });
-eq('MOS_ENVIRONMENT overrides derivation', cfgFields()[2], 'live_override');
+eq('MOS_ENVIRONMENT overrides derivation (D17)', cfgFields()[2], 'live_override');
 setEnv({ MOS_ENVIRONMENT: '' });
 eq('empty override falls back to derivation', cfgFields()[2], 'live_ab12cd');
 
@@ -141,23 +163,24 @@ f = cfgFields();
 eq('cookie names overridable', [f[4], f[5]], ['wp_anon', 'wp_jwt']);
 
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST /wp-json/mos/checkout>/api/v1/checkout, put /wp-json/mos/profile>/api/v1/profile' });
-eq('auth routes parsed, method upcased', cfgFields()[7],
-    'POST /wp-json/mos/checkout>/api/v1/checkout|PUT /wp-json/mos/profile>/api/v1/profile');
+eq('auth routes parsed, method upcased, defaults after', cfgFields()[7],
+    routesWith('POST /wp-json/mos/checkout>/api/v1/checkout', 'PUT /wp-json/mos/profile>/api/v1/profile'));
 
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'GET /nope>/api/v1/nope, POST /ok>/api/v1/ok, garbage, POST /no-arrow, DELETE /d>/x, POST >/empty-match' });
-eq('rejects GET/DELETE and malformed entries', cfgFields()[7], 'POST /ok>/api/v1/ok');
+eq('rejects GET/DELETE and malformed entries', cfgFields()[7], routesWith('POST /ok>/api/v1/ok'));
 
 setEnv({ MOS_IGNORE_PREFIXES: '/wp-admin, /wp-login.php,', MOS_IGNORE_PATTERNS: '^/feed(/|$)   \\.amp$' });
 f = cfgFields();
 eq('ignore prefixes split on commas', f[8], '/wp-admin|/wp-login.php');
-eq('ignore patterns split on spaces', f[10], '^/feed(/|$) \\.amp$');
+eq('ignore patterns split on spaces (D6)', f[10], '^/feed(/|$) \\.amp$');
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST />/api/v1/root' });
-eq('root matchPath is valid', cfgFields()[7], 'POST />/api/v1/root');
+eq('root matchPath is valid', cfgFields()[7], routesWith('POST />/api/v1/root'));
 setEnv({ MOS_SURFACE_DECISIONS_COOKIES: '^__session$   ^mos_' });
-eq('decision cookie patterns split on spaces', cfgFields()[11], '^__session$ ^mos_');
+eq('decision cookie patterns split on spaces (D6)', cfgFields()[11], '^__session$ ^mos_');
 setEnv();
+eq('default routes with none configured', cfgFields()[7], routesWith());
 eq('no decision cookies by default', cfgFields()[11], '');
-eq('decisions percent defaults to 100', cfgFields()[12], '100');
+eq('decisions percent defaults to 100 (D4)', cfgFields()[12], '100');
 const percent = (v) => (setEnv({ MOS_DECISIONS_PERCENT: v }), cfgFields()[12]);
 eq('decisions percent parsed and clamped', ['0', '25', ' 50 ', '100', '150', '-5', 'abc', '', '12.5', '99999999999'].map(percent),
     ['0', '25', '50', '100', '100', '0', '100', '100', '100', '100']);
@@ -202,6 +225,13 @@ eq('second route matches', route('/wp-json/mos/profile', 'PATCH'), 'PATCH /api/v
 eq('unknown path no match', route('/other', 'POST'), '');
 setEnv();
 eq('no routes configured -> no match', route('/wp-json/mos/checkout', 'POST'), '');
+eq('default route matches', route('/mos-api/access-checks', 'POST'), 'POST /api/v1/access-checks');
+eq('default routes are POST only', route('/mos-api/access-checks', 'PUT'), '');
+eq('all four defaults', ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates'].map((n) => route(`/mos-api/${n}`, 'POST')),
+    ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates'].map((n) => `POST /api/v1/${n}`));
+setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST /mos-api/access-checks>/api/v1/custom' });
+eq('a configured route wins over the default for the same path', route('/mos-api/access-checks', 'POST'), 'POST /api/v1/custom');
+setEnv();
 
 console.log('\nauthenticated route payload (JWT passthrough)');
 setEnv();
@@ -213,15 +243,17 @@ eq('sk_ key sends http on authed routes', m.http !== undefined, true);
 eq('client body keys preserved', [m.plan, m.qty], ['gold', 2]);
 eq('JWT forwarded from cookie', m.identity.userJwt, 'eyJhbG.payload.sig');
 eq('JWT sets fallback flag', m.identity.createAnonymousIdentifierFallback, true);
-eq('no anon id when JWT present', m.identity.anonymousIdentifier, null);
+eq('no anon id when JWT present', m.identity.anonymousIdentifier, undefined);
 eq('http metadata attached', m.http.url, 'https://site.test/wp-json/mos/checkout');
+eq('absent userAgent, clientIP and referer are left out', Object.keys(m.http), ['url']);
 
 m = merged('{"plan":"gold"}', 'mos_anon_id=anon-77');
 eq('anon identity when no JWT', m.identity.anonymousIdentifier, 'anon-77');
-eq('anon identity carries no JWT', m.identity.userJwt, null);
+eq('anon identity carries no JWT', m.identity.userJwt, undefined);
+eq('anon identity is just the identifier', m.identity, { anonymousIdentifier: 'anon-77' });
 
 m = merged('{}', '');
-eq('mints when no cookies', m.identity.createAnonymousIdentifier, true);
+eq('mints when no cookies', m.identity, { createAnonymousIdentifier: true });
 
 m = merged('{"identity":{"userJwt":"forged"},"http":{"url":"evil"}}', 'mos_user_jwt=real.jwt.sig');
 eq('client cannot forge identity', m.identity.userJwt, 'real.jwt.sig');
@@ -241,7 +273,7 @@ eq('custom JWT cookie name honoured', m.identity.userJwt, 'custom.jwt.sig');
 
 setEnv({ MOS_ANON_FALLBACK: 'false' });
 m = merged('{}', 'mos_user_jwt=a.b.c');
-eq('fallback flag off when configured', m.identity.createAnonymousIdentifierFallback, false);
+eq('fallback flag off when configured: the key is left out', m.identity, { userJwt: 'a.b.c' });
 
 setEnv({ MOS_SECRET_KEY: 'pk_preview_abc123' });
 m = merged('{"plan":"gold"}', 'mos_user_jwt=a.b.c');
