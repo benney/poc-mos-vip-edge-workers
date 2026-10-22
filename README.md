@@ -199,7 +199,8 @@ Not verifiable locally:
 - Enforced limits: the 2 s fetch budget, per-worker FIFO concurrency, 1 KiB header names,
   64 KiB values, 256 rules / 64 KiB per `install()`.
 - What the host does with an aborted instance. AssemblyScript has no `try`/`catch`, so a
-  throw from `install()` aborts — whether that becomes a 500 or fails open is unknown.
+  throw from `install()` aborts — whether that becomes a 500 or fails open is unknown. The conformance probes
+  `/__probe/abort-client-request` and `/__probe/abort-client-response` answer it on a deploy.
 - Cache behaviour, and whether `onOriginResponse` really only runs on a cache miss.
 - Which selectors the host's lol-html build accepts. This repo pins
   `html-rewriter-wasm@0.4.1`; the host's version may differ.

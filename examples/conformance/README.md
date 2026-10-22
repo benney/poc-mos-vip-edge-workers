@@ -21,6 +21,8 @@ curl -sSD - https://<site>/__probe/fetch-client-response-phase -o /dev/null | gr
 curl -sS     https://<site>/__probe/set-body-client-response
 curl -sS     https://<site>/__probe/kv
 curl -sS     https://<site>/__probe/memory-1m
+curl -sSD - https://<site>/__probe/abort-client-request
+curl -sSD - https://<site>/__probe/abort-client-response
 ```
 
 The same live probes can be run together with:
@@ -46,6 +48,8 @@ A difference means either a devkit bug or an undocumented host behaviour.
 | `/__probe/random`                                   | Does `getRandomValues` fill the buffer?                                                                                 |
 | `/__probe/kv`                                       | Do KV bytes and counters round-trip?                                                                                    |
 | `/__probe/body-marker`                              | Is `req.body` null without the body marker exported?                                                                    |
+| `/__probe/abort-client-request`                     | What does the host serve when the worker aborts in `onClientRequest`: an error status, the unmodified page, or something else? |
+| `/__probe/abort-client-response`                    | What does the host serve when the worker aborts in `onClientResponse`: an error status, the unmodified page, or something else? |
 | `/__probe/memory-256k` through `/__probe/memory-8m` | Can the worker allocate and touch each size?                                                                            |
 
 The snapshot probe documents which phase sees a request-phase header. The MOS worker no
