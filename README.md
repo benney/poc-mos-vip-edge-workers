@@ -16,7 +16,7 @@ production CDN proxy. Where it differs from the core proxy is in
 
 ```bash
 npm install
-npm run test:all      # 359 assertions across the examples
+npm run test:all      # 377 assertions across the examples
 npm run web           # playground at http://localhost:8787
 npm run serve         # a worker as a local edge in front of a real MOS (see scripts/serve.mjs)
 npm run hello         # playground with the minimal example instead

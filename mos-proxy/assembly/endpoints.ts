@@ -53,6 +53,30 @@ export function identityForDecision(cfg: Config, cookies: Cookies, setCookies: s
   );
 }
 
+/** The anonymous id core's `getExistingCookies` finds: the origin's when it sets either cookie, else the request's. */
+function existingAnonymousId(cfg: Config, cookies: Cookies, setCookies: string[]): string {
+  const originAnon = setCookieValue(setCookies, cfg.anonCookie);
+  if (originAnon !== null || setCookieValue(setCookies, cfg.jwtCookie) !== null) return originAnon === null ? "" : originAnon;
+  return decodeCookieValue(cookieValue(cookies, cfg.anonCookie));
+}
+
+/**
+ * Core's `defaultPersistIdentity`: set the anonymous cookie only for an id MOS minted, or for a
+ * JWT fallback that MOS reports unauthenticated when the reader has no anonymous cookie.
+ */
+export function shouldSetAnonCookie(
+  cfg: Config,
+  cookies: Cookies,
+  setCookies: string[],
+  sent: IdentityPayload,
+  identifier: string,
+  isAuthenticated: bool,
+): bool {
+  if (identifier.length == 0) return false;
+  if (sent.createAnonymousIdentifier) return true;
+  return sent.createAnonymousIdentifierFallback && !isAuthenticated && existingAnonymousId(cfg, cookies, setCookies).length == 0;
+}
+
 /** Identity for custom endpoints and authenticated routes, which see request cookies only. */
 export function identityFromRequest(cfg: Config, req: Request): IdentityPayload {
   return identityForDecision(cfg, req.cookies, []);

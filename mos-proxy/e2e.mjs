@@ -391,13 +391,46 @@ section('JWT identity on the decisions call');
     eq('JWT wins over anon id', [sent.identity.userJwt, sent.identity.anonymousIdentifier ?? null], ['j.w.t', null]);
 }
 
-section('existing anon cookie');
+section('anonymous cookie: set only when core would');
 {
-    const state = fresh({ respond: () => decisions({ identity: mosDecision('existing-1') }) });
-    const res = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=existing-1']] });
+    const anonCookies = (res) => header(res.headers, 'set-cookie').filter((c) => c.startsWith('mos_anon_id='));
+    const asReader = (cookie) => [['host', 'site.test'], ...(cookie ? [['cookie', cookie]] : [])];
+
+    let state = fresh({ respond: () => decisions({ identity: mosDecision('new-1') }) });
+    let res = await request(state, { headers: asReader('') });
+    eq('minted: the id is set', anonCookies(res), ['mos_anon_id=new-1; Path=/']);
+
+    state = fresh({ respond: () => decisions({ identity: mosDecision('existing-1') }) });
+    res = await request(state, { headers: asReader('mos_anon_id=existing-1') });
     eq('existing anon id sent', sentBody(state.mosCalls[0]).identity.anonymousIdentifier, 'existing-1');
-    // The port re-sets it on every decision that returns an identifier; core only on a mint (D3).
-    eq('cookie re-set (D3)', header(res.headers, 'set-cookie').includes('mos_anon_id=existing-1; Path=/'), true);
+    eq('existing anon cookie: not set again', anonCookies(res), []);
+    eq('the origin cookie is left alone', header(res.headers, 'set-cookie'), ['wp_session=xyz; Path=/']);
+
+    // The JWT fallback: MOS reports the JWT unauthenticated and hands back a fresh anonymous id.
+    state = fresh({ respond: () => decisions({ identity: mosDecision('fallback-1') }) });
+    res = await request(state, { headers: asReader('mos_user_jwt=j.w.t') });
+    eq('jwt fallback sent', sentBody(state.mosCalls[0]).identity, { userJwt: 'j.w.t', createAnonymousIdentifierFallback: true });
+    eq('jwt reported unauthenticated, no anon cookie: set', anonCookies(res), ['mos_anon_id=fallback-1; Path=/']);
+
+    state = fresh({ respond: () => decisions({ identity: mosDecision('fallback-1') }) });
+    res = await request(state, { headers: asReader('mos_user_jwt=j.w.t; mos_anon_id=existing-1') });
+    eq('jwt reported unauthenticated but the reader has an anon cookie: not set', anonCookies(res), []);
+
+    state = fresh({ respond: () => decisions({ identity: { ...mosDecision('user-1'), isAuthenticated: true, authType: 'jwt' } }) });
+    res = await request(state, { headers: asReader('mos_user_jwt=j.w.t') });
+    eq('jwt authenticated: not set', anonCookies(res), []);
+
+    state = fresh({ originSetCookies: [['set-cookie', 'mos_user_jwt=origin.jwt; Path=/']], respond: () => decisions({ identity: mosDecision('fallback-1') }) });
+    res = await request(state, { headers: asReader('mos_anon_id=req-anon') });
+    eq('the origin jwt hides the request anon cookie, so the fallback id is set', anonCookies(res), ['mos_anon_id=fallback-1; Path=/']);
+
+    state = fresh({ env: { ...ENV, MOS_ANON_FALLBACK: 'false' }, respond: () => decisions({ identity: mosDecision('fallback-1') }) });
+    res = await request(state, { headers: asReader('mos_user_jwt=j.w.t') });
+    eq('jwt with the fallback off: not set', anonCookies(res), []);
+
+    state = fresh({ respond: () => decisions({ identity: mosDecision('') }) });
+    res = await request(state, { headers: asReader('') });
+    eq('MOS returns no identifier: not set', anonCookies(res), []);
 }
 
 section('cookies forwarded to decisions are decoded');

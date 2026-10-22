@@ -9,7 +9,7 @@ import { selectDecisionCookies } from "./cookies";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { buildResource, resourceFor } from "./resource";
 import { sampleReader } from "./sampling";
-import { handleAuthenticatedRoute, handleCustomEndpoint, identityForDecision } from "./endpoints";
+import { handleAuthenticatedRoute, handleCustomEndpoint, identityForDecision, shouldSetAnonCookie } from "./endpoints";
 import { clientIpFrom, mayBePage, wantsDecision } from "./http";
 import { applyHttpOps, compileHttpBehavior, statusAllowsBody } from "./behavior";
 
@@ -87,23 +87,27 @@ function decide(cfg: Config, req: Request, resp: Response): void {
   const ua = req.headers.get("user-agent");
   const xff = req.headers.get("x-forwarded-for");
   const referer = req.headers.get("referer");
+  const setCookies = resp.headers.getSetCookie();
+  const sentIdentity = identityForDecision(cfg, req.cookies, setCookies);
   const decisions = fetchDecisions(
     cfg,
-    identityForDecision(cfg, req.cookies, resp.headers.getSetCookie()),
+    sentIdentity,
     resourceFor(path, buildResource(req, resp)),
     "https://" + (host === null ? "" : host) + req.url,
     ua,
     clientIpFrom(xff),
     referer,
-    selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, resp.headers.getSetCookie()),
+    selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, setCookies),
     origin,
   );
   if (decisions === null) return; // fail open: the page as served (D12)
 
   // Identity is persisted before the behaviour ops, matching the upstream stage order,
-  // so a `cookies` replacement in surfaceBehavior overrides it. Re-set whenever MOS returns one (D3).
+  // so a `cookies` replacement in surfaceBehavior overrides it. Only when core would set it.
   const identifier = decisions.identity.identifier;
-  if (identifier.length > 0) resp.headers.append("set-cookie", cfg.anonCookie + "=" + identifier + "; Path=/");
+  if (shouldSetAnonCookie(cfg, req.cookies, setCookies, sentIdentity, identifier, decisions.identity.isAuthenticated)) {
+    resp.headers.append("set-cookie", cfg.anonCookie + "=" + identifier + "; Path=/");
+  }
 
   // MOS returns the transformed page, or the workflow's own, in surfaceBehavior.http.body.
   const behavior = compileHttpBehavior(decisions.surfaceBehavior.http);

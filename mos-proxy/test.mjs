@@ -129,6 +129,22 @@ eq('an origin cookie with an empty value still counts as set', decisionIdentity(
 eq('values are percent-decoded', decisionIdentity('mos_anon_id=a%20b'), { anonymousIdentifier: 'a b' });
 eq('and so are origin values', decisionIdentity('', ['mos_user_jwt=x%2By; Path=/']), { userJwt: 'x+y', createAnonymousIdentifierFallback: true });
 
+console.log('\nanonymous cookie (port of defaultPersistIdentity)');
+setEnv();
+const setsAnon = (cookies, setCookies, identifier, isAuthenticated) =>
+    ex.testShouldSetAnonCookie(...[cookies, setCookies.join('\n'), identifier].flatMap(put), isAuthenticated ? 1 : 0) === 1;
+eq('a minted id is set', setsAnon('', [], 'new-1', false), true);
+eq('nothing without an identifier', setsAnon('', [], '', false), false);
+eq('an existing anon cookie is not re-set', setsAnon('mos_anon_id=a1', [], 'a1', false), false);
+eq('jwt fallback: unauthenticated, no anon cookie, set', setsAnon('mos_user_jwt=j.w.t', [], 'new-1', false), true);
+eq('jwt fallback: authenticated, not set', setsAnon('mos_user_jwt=j.w.t', [], 'user-1', true), false);
+eq('jwt fallback: unauthenticated but the request has an anon cookie, not set', setsAnon('mos_user_jwt=j.w.t; mos_anon_id=a1', [], 'new-1', false), false);
+eq('jwt fallback: the origin jwt hides the request anon cookie, set', setsAnon('mos_anon_id=a1', ['mos_user_jwt=o.j.t; Path=/'], 'new-1', false), true);
+eq('jwt fallback: the origin anon cookie counts, not set', setsAnon('mos_user_jwt=j.w.t', ['mos_anon_id=o1; Path=/'], 'o1', false), false);
+setEnv({ MOS_ANON_FALLBACK: 'false' });
+eq('jwt without the fallback flag: not set', setsAnon('mos_user_jwt=j.w.t', [], 'new-1', false), false);
+setEnv();
+
 console.log('\nconfig from env vars');
 setEnv();
 const cfgFields = () => call(ex.testLoadConfig).split('\n');

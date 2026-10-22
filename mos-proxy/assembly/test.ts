@@ -68,7 +68,7 @@ export function testMergeBody(bPtr: usize, bLen: i32, cPtr: usize, cLen: i32, uP
   ));
 }
 
-import { compileBehaviorSummary, identityForDecisionJson, statusAllowsBodyFor } from "./testsupport";
+import { compileBehaviorSummary, identityForDecisionJson, shouldSetAnonCookieFor, statusAllowsBodyFor } from "./testsupport";
 
 export function testCompileBehavior(pPtr: usize, pLen: i32): void {
   setOut(compileBehaviorSummary(String.UTF8.decodeUnsafe(pPtr, pLen)));
@@ -76,6 +76,17 @@ export function testCompileBehavior(pPtr: usize, pLen: i32): void {
 
 export function testIdentityForDecision(cPtr: usize, cLen: i32, sPtr: usize, sLen: i32): void {
   setOut(identityForDecisionJson(String.UTF8.decodeUnsafe(cPtr, cLen), String.UTF8.decodeUnsafe(sPtr, sLen)));
+}
+
+export function testShouldSetAnonCookie(
+  cPtr: usize, cLen: i32, sPtr: usize, sLen: i32, iPtr: usize, iLen: i32, auth: i32,
+): i32 {
+  return shouldSetAnonCookieFor(
+    String.UTF8.decodeUnsafe(cPtr, cLen),
+    String.UTF8.decodeUnsafe(sPtr, sLen),
+    String.UTF8.decodeUnsafe(iPtr, iLen),
+    auth != 0,
+  ) ? 1 : 0;
 }
 
 export function testStatusAllowsBody(status: i32): i32 {

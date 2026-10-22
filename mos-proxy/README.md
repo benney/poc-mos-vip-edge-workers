@@ -66,7 +66,7 @@ response over the request's cookies.
 | Resource fields | `buildResource` in `assembly/resource.ts` adds or overrides fields over `{ id: path }`, like the upstream `ResourceProvider`. Edit it per site; string values only |
 | Fail-open | Every failure is a checked return; an unconfigured or erroring worker passes through |
 
-The anonymous cookie is re-set on every request, where the original only sets it on mint.
+The anonymous cookie is set as the original does: when MOS minted the id, or for a JWT fallback that MOS reports unauthenticated when the reader has no anonymous cookie.
 
 ## Config
 

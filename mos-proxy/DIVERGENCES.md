@@ -8,7 +8,6 @@ Bump `PORTED_CORE_VERSION` in `assembly/version.ts`, `config.portedCoreVersion` 
 | --- | --- | --- | --- | --- |
 | D1 | Whole-body mode | Sends `http.proxyOrigin.status` only, never the page. Honours `surfaceBehavior.http.body` as a workflow-supplied replacement that skips components. | Also sends `http.proxyOrigin.body` (the page) and swaps in `surfaceBehavior.http.body`, which in this mode is the page MOS transformed. | VIP's edge cannot rewrite HTML, so MOS does it. The `proxyOrigin.body` field is undocumented, needs whole-body enabled for the org (MOS answers 403 otherwise) and an `sk_` key. |
 | D2 | HTML rewriting | Applies `componentBehaviors`, injects `injectScriptUrl`, parses page metadata into `resource.meta`, rewrites links. | None of these. `componentBehaviors` is not modelled, and `resource.meta` is omitted. | MOS applies components server-side in whole-body mode and fills `resource.meta` from the page it is sent. |
-| D3 | Anonymous cookie | Sets `mos_anon_id` only when it minted an identity, or for a JWT fallback when MOS reports the JWT unauthenticated and no anonymous cookie exists. | Sets it on every decision that returns an identifier. | Simpler, and the cookie is idempotent. Costs an extra Set-Cookie on the reader's copy only. |
 | D4 | Rollout sampling | None. | `MOS_DECISIONS_PERCENT` and a sticky `mos_bucket` cookie decide which readers get a decision. | Port-only, for a gradual rollout on a live site. |
 | D5 | Path gating | Only `surfaceDecisionsIgnorePaths` patterns. | WordPress admin, login, REST, XML-RPC, cron, core, content and feed paths are always skipped. `MOS_IGNORE_PREFIXES` adds plain prefixes. | None of these are reader pages, and skipping them also keeps their compression untouched. |
 | D6 | Pattern lists | `surfaceDecisionsIgnorePaths` and `surfaceDecisionsCookies` are comma-separated. A malformed regex is logged and skipped. | `MOS_IGNORE_PATTERNS` and `MOS_SURFACE_DECISIONS_COOKIES` are space-separated. A malformed regex aborts the request. | Space-separated is the port's convention. AssemblyScript cannot catch the regex error. |
@@ -27,6 +26,8 @@ Bump `PORTED_CORE_VERSION` in `assembly/version.ts`, `config.portedCoreVersion` 
 | D19 | Endpoint failures | A failing API fetch propagates the fetcher's error to the platform. | Custom endpoints answer 502 `MOS endpoint unavailable`, authenticated routes 502 `MOS API unavailable`. | A 502 is a clean answer for the client, with no worker error. |
 | D20 | Request URL | `http.url` is the request URL as the runtime received it. | `https://` plus the Host header plus the path and query. | The worker sees an origin-relative URL, and assumes https. |
 | D21 | Missing config | Fails when the config is invalid (`new URL` throws). | If `MOS_HOST`, `MOS_SURFACE_SLUG` or `MOS_SECRET_KEY` is missing, the worker does nothing. | A half-configured site should keep serving pages. |
+
+D3 (anonymous cookie) is closed: the port sets `mos_anon_id` under core's rule. IDs are never reused.
 
 ## Golden-fixture oracle (not built)
 
