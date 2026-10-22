@@ -1,30 +1,6 @@
-// Node harness: instantiates the compiled test.wasm, stubs the two host imports,
-// and decodes the msgpack rule payload the worker submits to html.apply_rewrite_rules.
+// Node harness: instantiates the compiled test.wasm, stubs the host imports, and
+// asserts the shared modules (config, cookies, endpoints, behavior, identity, sampling).
 import { readFileSync } from 'node:fs';
-
-const KIND = { 0x01: 'insertBefore', 0x02: 'insertAfter', 0x03: 'prependInside', 0x04: 'appendInside', 0x05: 'replace', 0x06: 'remove', 0x10: 'setAttr', 0x11: 'removeAttr', 0x12: 'rewriteAttrRe', 0x20: 'setText' };
-
-let installed = [];
-
-function decodeRules(bytes) {
-    let p = 0;
-    const u8 = () => bytes[p++];
-    const arrLen = () => { const b = u8(); if ((b & 0xf0) === 0x90) return b & 0x0f; if (b === 0xdc) { const n = (u8() << 8) | u8(); return n; } throw new Error('bad array ' + b.toString(16)); };
-    const str = () => { const b = u8(); let n; if ((b & 0xe0) === 0xa0) n = b & 0x1f; else if (b === 0xd9) n = u8(); else if (b === 0xda) n = (u8() << 8) | u8(); else throw new Error('bad str ' + b.toString(16)); const s = Buffer.from(bytes.slice(p, p + n)).toString('utf8'); p += n; return s; };
-    const uint = () => { const b = u8(); if (b <= 0x7f) return b; if (b === 0xcd) return (u8() << 8) | u8(); throw new Error('bad uint ' + b.toString(16)); };
-
-    const count = arrLen();
-    const out = [];
-    for (let i = 0; i < count; i++) {
-        const fields = arrLen();
-        const kind = uint();
-        const selector = str();
-        const args = [];
-        for (let j = 0; j < fields - 2; j++) args.push(str());
-        out.push({ op: KIND[kind] ?? kind, selector, args });
-    }
-    return out;
-}
 
 const wasm = readFileSync(new URL('../build/mos-proxy/test.wasm', import.meta.url));
 let inst;
@@ -54,13 +30,6 @@ const imports = {
             return (BigInt(ptr) << 32n) | BigInt(bytes.length);
         },
         fetch() { throw new Error('fetch should not be reached in these tests'); },
-    },
-    html: {
-        apply_rewrite_rules(ptr, len) {
-            const mem = new Uint8Array(inst.exports.memory.buffer, ptr, len);
-            installed = decodeRules(Uint8Array.from(mem));
-            return 0; // host OK
-        },
     },
 };
 
@@ -137,133 +106,6 @@ eq('anon when no jwt', ident('anon1', ''),
     { createAnonymousIdentifier: false, anonymousIdentifier: 'anon1', userJwt: null, createAnonymousIdentifierFallback: false });
 eq('mint when neither', ident('', ''),
     { createAnonymousIdentifier: true, anonymousIdentifier: null, userJwt: null, createAnonymousIdentifierFallback: false });
-
-const compile = (decisions, script = '') => JSON.parse(call(ex.testCompilePlan, JSON.stringify(decisions), script));
-const apply = (plan) => callInt(ex.testApplyPlan, JSON.stringify(plan));
-
-console.log('\nplan compilation');
-const base = { status: 'success', identity: { identifier: 'anon-new', isAuthenticated: false }, componentsSkipped: false, componentBehaviors: {} };
-
-eq('carries minted identifier', compile(base).a, 'anon-new');
-eq('injects script into head', compile(base, 'https://cdn.example.com/mos.js').r,
-    [{ o: 'ai', s: 'head', h: '<script src="https://cdn.example.com/mos.js" async defer></script>' }]);
-
-eq('componentsSkipped drops component rules', compile({
-    ...base,
-    componentsSkipped: true,
-    componentBehaviors: { paywall: { metadata: { cssSelector: '.article' }, content: { append: [{ type: 'html', content: '<b>x</b>' }] } } },
-}).r, []);
-
-eq('before/prepend/append/after', compile({
-    ...base,
-    componentBehaviors: {
-        paywall: {
-            metadata: { cssSelector: '.article-body' },
-            content: {
-                before: [{ type: 'html', content: '<i>B</i>' }],
-                prepend: [{ type: 'html', content: '<i>P</i>' }],
-                append: [{ type: 'html', content: '<i>A</i>' }],
-                after: [{ type: 'html', content: '<i>F</i>' }],
-            },
-        },
-    },
-}).r, [
-    { o: 'ib', s: '.article-body', h: '<i>B</i>' },
-    { o: 'ia', s: '.article-body', h: '<i>F</i>' },
-    { o: 'pi', s: '.article-body', h: '<i>P</i>' },
-    { o: 'ai', s: '.article-body', h: '<i>A</i>' },
-]);
-
-eq('list order preserved in one payload', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: '#x' }, content: { after: [{ type: 'html', content: '1' }, { type: 'html', content: '2' }, { type: 'html', content: '3' }] } } },
-}).r, [{ o: 'ia', s: '#x', h: '123' }]);
-
-eq('remove -> replace, keeps before/after, drops inside', compile({
-    ...base,
-    componentBehaviors: {
-        c: {
-            metadata: { cssSelector: '.gated' },
-            content: {
-                remove: true,
-                before: [{ type: 'html', content: '<promo/>' }],
-                prepend: [{ type: 'html', content: 'GONE' }],
-                append: [{ type: 'html', content: 'GONE' }],
-                after: [{ type: 'html', content: '<foot/>' }],
-            },
-        },
-    },
-}).r, [
-    { o: 'ib', s: '.gated', h: '<promo/>' },
-    { o: 'ia', s: '.gated', h: '<foot/>' },
-    { o: 'rp', s: '.gated', h: '' },
-]);
-
-eq('text type is escaped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'text', content: '<script>&bad' }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '&lt;script&gt;&amp;bad' }]);
-
-eq('element type -> web component tag', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'element', schema: 'mos:paywall@2', props: { tier: 'gold', n: 3 } }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '<mos-paywall version="2" props="{&quot;tier&quot;:&quot;gold&quot;,&quot;n&quot;:3}"></mos-paywall>' }]);
-
-eq('uppercase type still matches', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'HTML', content: '<b/>' }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '<b/>' }]);
-
-eq(':last-child selector skipped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'div:last-child' }, content: { append: [{ type: 'html', content: 'x' }] } } },
-}).r, []);
-
-eq('null cssSelector skipped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: {}, content: { append: [{ type: 'html', content: 'x' }] } } },
-}).r, []);
-
-eq('unknown element type renders empty (no abort)', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'mystery' }] } } },
-}).r, []);
-
-console.log('\nHtmlRules replay (decoded msgpack sent to host)');
-installed = [];
-const applied = apply(({
-    a: 'anon-1',
-    r: [
-        { o: 'ib', s: '.a', h: '<x/>' },
-        { o: 'pi', s: 'head', h: '<script/>' },
-        { o: 'rp', s: '.gated', h: '' },
-        { o: 'zz', s: '.bad', h: 'ignored' },
-    ],
-}));
-eq('applied count skips unknown op', applied, 3);
-eq('msgpack rules match', installed, [
-    { op: 'insertBefore', selector: '.a', args: ['<x/>'] },
-    { op: 'prependInside', selector: 'head', args: ['<script/>'] },
-    { op: 'replace', selector: '.gated', args: [''] },
-]);
-
-installed = [];
-eq('empty plan installs nothing', apply({ a: '', r: [] }), 0);
-eq('no host call on empty plan', installed, []);
-
-// 300 rules > MAX_RULES 200
-installed = [];
-const many = { a: '', r: Array.from({ length: 300 }, (_, i) => ({ o: 'ai', s: `#n${i}`, h: 'x' })) };
-eq('rule count capped at 200', apply(many), 200);
-eq('host received exactly 200', installed.length, 200);
-
-// oversize payload must stop before the 64 KiB host limit
-installed = [];
-const big = { a: '', r: Array.from({ length: 40 }, (_, i) => ({ o: 'ai', s: `#b${i}`, h: 'z'.repeat(4000) })) };
-const bigApplied = apply(big);
-const bytes = installed.reduce((n, r) => n + r.selector.length + r.args.join('').length, 0);
-eq('payload capped under 64 KiB', bytes < 64 * 1024, true);
-eq('stopped early rather than aborting', bigApplied < 40, true);
 
 console.log('\nconfig from env vars');
 setEnv();

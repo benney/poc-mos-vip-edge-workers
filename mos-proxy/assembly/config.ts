@@ -17,7 +17,6 @@ export class Config {
   mosEndpointsPrefix: string = DEFAULT_ENDPOINTS_PREFIX;
   anonCookie: string = "mos_anon_id";
   jwtCookie: string = "mos_user_jwt";
-  injectScriptUrl: string = "";
   ignorePrefixes: string[] = [];
   ignorePatterns: string[] = [];
   decisionCookiePatterns: string[] = [];
@@ -138,8 +137,6 @@ export function loadConfig(): Config {
   if (anon !== null && anon.length > 0) c.anonCookie = anon;
   const jwt = getenv("MOS_JWT_COOKIE");
   if (jwt !== null && jwt.length > 0) c.jwtCookie = jwt;
-  const script = getenv("MOS_INJECT_SCRIPT_URL");
-  if (script !== null) c.injectScriptUrl = script;
   const fallback = getenv("MOS_ANON_FALLBACK");
   if (fallback !== null && fallback == "false") c.anonFallback = false;
 

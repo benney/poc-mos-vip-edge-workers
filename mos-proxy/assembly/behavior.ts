@@ -1,6 +1,7 @@
 // Compiles surfaceBehavior.http into ops for the response phase. A `body` key means
 // returnImmediately: the body replaces the page and components are skipped.
 import { JSON } from "json-as";
+import { Headers } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { NameValue } from "./decisions";
 
 /** Typed view of surfaceBehavior.http — both the Set and Modify shapes. */
@@ -24,11 +25,6 @@ export class HttpOps {
   hdel: string[] = [];
   ckreset: bool = false;
   ck: string[] = [];
-
-  isEmpty(): bool {
-    return this.st == 0 && !this.hrep && !this.ckreset
-      && this.hset.length == 0 && this.hdel.length == 0 && this.ck.length == 0;
-  }
 }
 
 export class HttpBehavior {
@@ -109,4 +105,17 @@ export function compileHttpBehavior(raw: JSON.Raw | null): HttpBehavior | null {
   }
 
   return out;
+}
+
+/** Applies ops in order: replace-all, cookie reset, set, delete, append. */
+export function applyHttpOps(ops: HttpOps, headers: Headers): i32 {
+  if (ops.hrep) {
+    const existing = headers.keys();
+    for (let i = 0; i < existing.length; i++) headers.delete(existing[i]);
+  }
+  if (ops.ckreset) headers.delete("set-cookie");
+  for (let i = 0; i < ops.hset.length; i++) headers.set(ops.hset[i].name, ops.hset[i].value);
+  for (let i = 0; i < ops.hdel.length; i++) headers.delete(ops.hdel[i]);
+  for (let i = 0; i < ops.ck.length; i++) headers.append("set-cookie", ops.ck[i]);
+  return ops.st;
 }

@@ -6,9 +6,7 @@ import { cookieValue, decodeCookieValue } from "./cookies";
 import { resourceFor } from "./resource";
 import { bucketFor } from "./sampling";
 import { isWordPressFeed } from "./http";
-import { Config } from "./config";
-import { SurfaceDecisions, buildIdentity } from "./decisions";
-import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
+import { buildIdentity } from "./decisions";
 
 // --runtime stub never frees or moves, so dataStart pointers stay valid.
 const keep: Uint8Array[] = [];
@@ -39,26 +37,6 @@ export function testBuildIdentity(aPtr: usize, aLen: i32, jPtr: usize, jLen: i32
   const anon = String.UTF8.decodeUnsafe(aPtr, aLen);
   const jwt = String.UTF8.decodeUnsafe(jPtr, jLen);
   setOut(JSON.stringify(buildIdentity(anon, jwt, true)));
-}
-
-function cfg(injectScriptUrl: string): Config {
-  const c = new Config();
-  c.mosHost = "https://api.example.com";
-  c.surfaceSlug = "slug";
-  c.mosSecretKey = "sk_test_x";
-  c.injectScriptUrl = injectScriptUrl;
-  c.valid = true;
-  return c;
-}
-
-export function testCompilePlan(dPtr: usize, dLen: i32, sPtr: usize, sLen: i32): void {
-  const decisions = JSON.parse<SurfaceDecisions>(String.UTF8.decodeUnsafe(dPtr, dLen));
-  const script = String.UTF8.decodeUnsafe(sPtr, sLen);
-  setOut(serializePlan(compilePlan(cfg(script), decisions)));
-}
-
-export function testApplyPlan(pPtr: usize, pLen: i32): i32 {
-  return applyPlan(parsePlan(String.UTF8.decodeUnsafe(pPtr, pLen)));
 }
 
 // --- config / endpoints / authenticated routes ---

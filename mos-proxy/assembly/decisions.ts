@@ -1,37 +1,8 @@
-// Surface-decisions API: json-as schemas + the client-request-phase fetch.
-// Dynamic-key records (componentBehaviors) map to Map<string, T>; `props` stays
-// raw via JSON.Raw so we never need a schema for customer-defined props.
+// Surface-decisions API: json-as schemas + the fetch. componentBehaviors is not modelled:
+// MOS applies it server-side, and json-as skips keys the schema does not name.
 import { JSON } from "json-as";
 import { fetch, Headers, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { Config } from "./config";
-
-@json
-export class WebElement {
-  type: string = "";
-  content: string | null = null;
-  schema: string | null = null;
-  props: JSON.Raw | null = null;
-}
-
-@json
-export class WebContent {
-  before: WebElement[] | null = null;
-  prepend: WebElement[] | null = null;
-  append: WebElement[] | null = null;
-  after: WebElement[] | null = null;
-  remove: bool = false;
-}
-
-@json
-export class SubMetadata {
-  cssSelector: string | null = null;
-}
-
-@json
-export class ComponentBehavior {
-  metadata: SubMetadata = new SubMetadata();
-  content: WebContent | null = null;
-}
 
 @json
 export class DecisionIdentity {
@@ -58,8 +29,6 @@ export class SurfaceDecisions {
   status: string = "";
   identity: DecisionIdentity = new DecisionIdentity();
   surfaceBehavior: SurfaceBehavior = new SurfaceBehavior();
-  componentsSkipped: bool = false;
-  componentBehaviors: Map<string, ComponentBehavior> = new Map<string, ComponentBehavior>();
 }
 
 // --- request payload ---
@@ -68,8 +37,7 @@ export class SurfaceDecisions {
 export class ProxyOrigin {
   // The cached or origin status; the response phase knows it.
   status: i32 = 0;
-  // Whole-body mode only: MOS applies componentBehaviors to this page and returns it
-  // in surfaceBehavior.http.body.
+  // MOS applies componentBehaviors to this page and returns it in surfaceBehavior.http.body.
   @omitnull()
   body: string | null = null;
 }
@@ -106,8 +74,7 @@ export class IdentityPayload {
 export class DecisionsRequest {
   surfaceSlug: string = "";
   identity: IdentityPayload = new IdentityPayload();
-  // `{ id: path }` plus buildResource's fields. No `meta`: the streaming worker cannot read
-  // the page, and in whole-body mode MOS fills it.
+  // `{ id: path }` plus buildResource's fields. No `meta`: MOS fills it from the page.
   resource: Map<string, string> = new Map<string, string>();
   // Omitted entirely for publishable tokens — see Config.includeHttp.
   @omitnull()

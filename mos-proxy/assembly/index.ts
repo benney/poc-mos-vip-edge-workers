@@ -1,18 +1,17 @@
-// POC: stripped-back MOS proxy for WP-VIP edge workers.
+// POC: MOS proxy for WP-VIP edge workers.
 //
-// Decides in onClientResponse, after the cache, so VIP caches the origin's page as-is
-// and each reader's copy is personalised on the way out. HtmlRules apply there, so the
-// page still streams. Endpoint and authenticated routes short-circuit in onClientRequest.
+// Runs in onClientResponse, after the cache: VIP serves the page from its cache or the
+// origin as usual, and this worker sends it to MOS and swaps in what comes back. MOS
+// applies componentBehaviors server-side and fills resource.meta from the page.
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
-import { compileHttpBehavior } from "./behavior";
 import { Config, loadConfig } from "./config";
 import { selectDecisionCookies } from "./cookies";
 import { fetchDecisions, ProxyOrigin } from "./decisions";
 import { buildResource, resourceFor } from "./resource";
 import { sampleReader } from "./sampling";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityFromRequest } from "./endpoints";
-import { firstIp, wantsDecision } from "./http";
-import { applyHttpOps, applyPlan, compilePlan } from "./rules";
+import { firstIp, mayBePage, wantsDecision } from "./http";
+import { applyHttpOps, compileHttpBehavior } from "./behavior";
 
 export {
   alloc,
@@ -20,12 +19,23 @@ export {
   on_client_response,
   // Custom endpoints forward the client body; authenticated routes read it as JSON.
   client_request_body,
+  // Buffers every client response, not just pages; anything else passes straight through.
+  client_response_body,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
 // The runtime's body marker names, which the SDK's don't match: needs_ since
-// edge-workers 6c106196 (2026-10-14), on_ before it. See the README.
+// edge-workers 6c106196 (2026-10-14), on_ before it. Without these VIP never buffers
+// the page and resp.text() is null. See the README.
 export function needs_client_request_body(): void {}
+export function needs_client_response_body(): void {}
 export function on_client_request_body(): void {}
+export function on_client_response_body(): void {}
+
+/** MOS can only read an uncompressed page; a compressed one is served as it is. */
+function isUncompressed(resp: Response): bool {
+  const encoding = resp.headers.get("content-encoding");
+  return encoding === null || encoding.length == 0 || encoding.toLowerCase() == "identity";
+}
 
 onClientRequest((req: Request): void => {
   const cfg = loadConfig();
@@ -43,6 +53,10 @@ onClientRequest((req: Request): void => {
 
   // Stage 1b: authenticated API routing (POST/PUT/PATCH).
   if (handleAuthenticatedRoute(cfg, req, path, fullUrl)) return;
+
+  // MOS needs the page uncompressed, which has to be asked for before the response exists.
+  // Every page request asks for the same variant, so the cache still shares one copy.
+  if (mayBePage(cfg, req)) req.headers.set("accept-encoding", "identity");
 });
 
 onClientResponse((resp: Response): void => {
@@ -51,9 +65,9 @@ onClientResponse((resp: Response): void => {
 
   // The client's request as it arrived, before onClientRequest.
   const req = resp.request;
-  if (!wantsDecision(cfg, req, resp)) return;
+  if (!wantsDecision(cfg, req, resp) || !isUncompressed(resp)) return;
   const sample = sampleReader(cfg, req);
-  // Outside MOS_DECISIONS_PERCENT: the page as cached.
+  // Outside MOS_DECISIONS_PERCENT: the page as served.
   if (sample.inSample) decide(cfg, req, resp);
   // Last, so the decision neither forwards it as an origin cookie nor replaces it.
   const bucketCookie = sample.setCookie;
@@ -61,14 +75,18 @@ onClientResponse((resp: Response): void => {
 });
 
 function decide(cfg: Config, req: Request, resp: Response): void {
+  const html = resp.text();
+  if (html === null) return;
+
+  const origin = new ProxyOrigin();
+  origin.status = resp.status;
+  origin.body = html;
+
   const path = req.path;
   const host = req.headers.get("host");
   const ua = req.headers.get("user-agent");
   const xff = req.headers.get("x-forwarded-for");
   const referer = req.headers.get("referer");
-  const origin = new ProxyOrigin();
-  origin.status = resp.status;
-
   const decisions = fetchDecisions(
     cfg,
     identityFromRequest(cfg, req),
@@ -80,27 +98,21 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, resp.headers.getSetCookie()),
     origin,
   );
-  if (decisions === null) return; // fail open: the page as cached
+  if (decisions === null) return; // fail open: the page as served
 
   // Identity is persisted before the behaviour ops, matching the upstream stage order,
   // so a `cookies` replacement in surfaceBehavior overrides it.
   const identifier = decisions.identity.identifier;
   if (identifier.length > 0) resp.headers.append("set-cookie", cfg.anonCookie + "=" + identifier + "; Path=/");
 
+  // MOS returns the transformed page, or the workflow's own, in surfaceBehavior.http.body.
   const behavior = compileHttpBehavior(decisions.surfaceBehavior.http);
   if (behavior !== null) {
     const status = applyHttpOps(behavior.ops, resp.headers);
     if (status != 0) resp.status = <u16>status;
+    if (behavior.hasBody) resp.setBodyText(behavior.body);
   }
 
   // The reader's copy is personal. The cached page underneath it is untouched.
   resp.headers.set("cache-control", "private, no-store");
-
-  // A workflow's own body (returnImmediately) replaces the page and skips components.
-  if (behavior !== null && behavior.hasBody) {
-    resp.setBodyText(behavior.body);
-    return;
-  }
-
-  applyPlan(compilePlan(cfg, decisions));
 }
