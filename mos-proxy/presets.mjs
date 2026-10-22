@@ -19,13 +19,19 @@ const ORIGIN_HTML = `<!doctype html>
 const ENV = {
     MOS_HOST: 'https://api.mos.test',
     MOS_SURFACE_SLUG: 'news',
-    // Publishable shape: this page is a browser. Production mos-proxy runs server-side
-    // and uses an sk_ key there (see e2e.mjs, which models the production shape).
-    MOS_SECRET_KEY: 'pk_test_ab12cd',
-    MOS_INJECT_SCRIPT_URL: 'https://cdn.mos.test/mos.js',
+    // A fake sk_ shape: the worker only sends the page (`http`) for secret keys. Nothing
+    // leaves the browser in fake mode. Not sk_(live|test|prod), so the UI does not warn.
+    MOS_SECRET_KEY: 'sk_demo_ab12cd',
     MOS_IGNORE_PREFIXES: '/wp-admin,/wp-login.php',
     MOS_AUTHENTICATED_ROUTES: 'POST /wp-json/mos/checkout>/api/v1/checkout',
 };
+
+// What MOS would return for ORIGIN_HTML: the paywall block and promo already applied.
+const WALLED_HTML = ORIGIN_HTML
+    .replace('<p>The second paragraph is where it gets interesting.</p>',
+        '<div class="paywall">Subscribe to keep reading</div>')
+    .replace('<div class="upsell">Generic house ad</div>',
+        '<aside class="promo">Subscribe for full access</aside>');
 
 const decisions = (over = {}) => ({
     status: 'success',
@@ -58,28 +64,19 @@ const req = (over = {}) => ({
 });
 
 export const PRESETS = {
-    'Component injection': {
-        note: 'Anonymous reader. Components inject a promo and a web component, remove the house ad, and the config script goes into <head>.',
+    'Whole-body paywall': {
+        note: 'Anonymous reader. The worker sends the page to MOS (http.proxyOrigin) and serves the body that comes back in surfaceBehavior.http.body: a paywall block and a promo, applied by MOS.',
         env: ENV,
         request: req(),
         origin: origin(),
         failDecisions: false,
         decisions: decisions({
-            componentBehaviors: {
-                paywall: {
-                    metadata: { cssSelector: '.article-body' },
-                    content: {
-                        before: [{ type: 'html', content: '<aside class="promo">Subscribe for full access</aside>' }],
-                        append: [{ type: 'element', schema: 'mos:paywall@2', props: { tier: 'gold', remaining: 0 } }],
-                    },
-                },
-                houseAd: { metadata: { cssSelector: '.upsell' }, content: { remove: true } },
-            },
+            surfaceBehavior: { http: { body: WALLED_HTML } },
         }),
     },
 
-    'Paywall hard block': {
-        note: 'surfaceBehavior.http carries a `body`, which means returnImmediately: the body replaces the cached page and components are skipped.',
+    'Workflow response (402)': {
+        note: 'A workflow answers for the page: surfaceBehavior.http carries its own status, headers, cookies and body, which replace the page as served.',
         env: ENV,
         request: req({ url: '/2026/premium-scoop' }),
         origin: origin(),
@@ -97,7 +94,7 @@ export const PRESETS = {
     },
 
     'Header + status only': {
-        note: 'surfaceBehavior.http with no `body`, so it applies to the page response: status override, header add/remove, extra cookie, and HTML rewriting still runs.',
+        note: 'surfaceBehavior.http with no `body`: the page is served as fetched, with the status overridden, a header added, the etag removed and an extra cookie.',
         env: ENV,
         request: req(),
         origin: origin(),
@@ -111,13 +108,22 @@ export const PRESETS = {
                     addCookies: ['mos_geo=eu; Path=/'],
                 },
             },
-            componentBehaviors: {
-                notice: {
-                    metadata: { cssSelector: 'footer' },
-                    content: { prepend: [{ type: 'text', content: 'Unavailable in your region. ' }] },
-                },
-            },
         }),
+    },
+
+    'Compressed page': {
+        note: 'The origin page is gzip-encoded, which MOS cannot read, so the worker makes no MOS call and the page is served as it is.',
+        env: ENV,
+        request: req(),
+        origin: origin({
+            headers: [
+                ['content-type', 'text/html; charset=utf-8'],
+                ['content-encoding', 'gzip'],
+            ],
+            body: '(gzip bytes, not readable as text)',
+        }),
+        failDecisions: false,
+        decisions: decisions(),
     },
 
     'Custom endpoint': {
@@ -135,7 +141,7 @@ export const PRESETS = {
     },
 
     'Authenticated route (JWT)': {
-        note: 'A configured route merges the client JSON body with the resolved identity and http metadata, then calls MOS with the secret key. The JWT comes from the cookie.',
+        note: 'A configured route merges the client JSON body with the resolved identity and http metadata, then calls MOS with the key. The JWT comes from the cookie.',
         env: ENV,
         request: req({
             method: 'POST',
@@ -156,7 +162,7 @@ export const PRESETS = {
     },
 
     'Fail open (API down)': {
-        note: 'The decisions call fails, so the page is served as cached, untouched and with no cookie.',
+        note: 'The decisions call fails, so the page is served as fetched, untouched and with no anon cookie.',
         env: ENV,
         request: req(),
         origin: origin(),
