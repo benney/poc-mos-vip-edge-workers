@@ -1,10 +1,11 @@
 // Serves a compiled worker over HTTP with real fetches, as the edge would: onClientRequest,
-// an in-memory cache, the origin on a miss, then onClientResponse and its HtmlRules.
+// an in-memory cache, the origin on a miss, then onClientResponse. HtmlRules are applied
+// only for workers that install them (e.g. the hello and conformance examples).
 // Without ORIGIN_URL it also starts a demo article origin and uses that.
 //
 //   MOS_HOST=http://localhost:4621 MOS_SURFACE_SLUG=news MOS_SECRET_KEY=sk_... node scripts/serve.mjs [worker]
 //
-// worker is mos-proxy (default, streaming) or mos-proxy-whole-body; build it first.
+// worker defaults to mos-proxy; build it first.
 // EDGE_PORT (default 4700) is the site; ORIGIN_PORT (default 4701) is the demo origin.
 // CACHE_TTL_MS (default 60000) is how long a page stays cached.
 import { readFileSync } from 'node:fs';

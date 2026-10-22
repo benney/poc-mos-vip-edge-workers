@@ -190,8 +190,8 @@ onClientResponse((resp: Response): void => {
     return;
   }
 
-  // The streaming MOS worker replaces the page this way for a workflow's own body. The
-  // body marker is not exported, so this asks whether the host honours it anyway.
+  // A worker replaces the page this way when MOS returns a body. The runtime's body
+  // marker is not exported here, so this asks whether the host honours it anyway.
   if (probe.startsWith("set-body-client-response")) {
     resp.setBodyText("PROBE-REPLACED-BODY");
     return;

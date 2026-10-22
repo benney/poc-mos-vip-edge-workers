@@ -10,8 +10,9 @@ implements the host side in Node: the msgpack wire formats, every host function,
 pointer conventions. That makes a compiled `.wasm` runnable, testable, and inspectable in
 a browser before it ever reaches the edge.
 
-Not affiliated with Automattic. [`mos-proxy`](mos-proxy) is a port of a
-production CDN proxy, and documents which parts of it the phase model can express.
+Not affiliated with Automattic. There is one worker, [`mos-proxy`](mos-proxy), a port of a
+production CDN proxy. Where it differs from the core proxy is in
+[`mos-proxy/DIVERGENCES.md`](mos-proxy/DIVERGENCES.md).
 
 ```bash
 npm install
@@ -30,8 +31,7 @@ npm run hello         # playground with the minimal example instead
 | [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
 | [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
 | [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | 114 KB worker. Outbound `fetch()`, JSON, cookies, identity, declarative rewriting, 239 assertions. |
-| [`mos-proxy-whole-body`](mos-proxy-whole-body) | 111 KB worker. Sends the served page to MOS after the cache and swaps in its rewrite, 37 assertions. |
+| [`mos-proxy`](mos-proxy)                       | The MOS worker. Sends the served page to MOS after the cache and swaps in its rewrite.             |
 | [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
 | [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
 
@@ -82,7 +82,7 @@ the conformance probe's `/__probe/regex` is there to diff the rest.
 **`fetch()` works in every phase.** Until 2026-10-13 it was client-request only and any
 other phase returned `errorKind: "phase_not_allowed"`. The host lifted that; the change is
 on the SDK's `main` branch, not yet in an npm release. A call can now depend on the
-response, which is what lets both MOS workers decide in `onClientResponse`, after the cache.
+response, which is what lets the MOS worker decide in `onClientResponse`, after the cache.
 
 **The SDK's body markers don't match the runtime's.** A worker gets a phase's body only if
 it exports that phase's marker, but the SDK exports `client_response_body` and friends while
@@ -91,7 +91,7 @@ edge-workers `6c106196`, 2026-10-14). Neither runtime name has ever matched, so 
 `req.body` and `resp.body` stay null and `text()` returns null, as if no marker were exported.
 Every worker here that reads a body exports both runtime names as well, and the devkit
 buffers a body only for those names, so a worker relying on the SDK's markers alone fails
-locally the way it does on VIP. Found on a real deploy of `mos-proxy-whole-body`, 2026-10-18.
+locally the way it does on VIP. Found on a real deploy of `mos-proxy`, 2026-10-18.
 
 **`onOriginResponse` is the only phase that can read a header you set.**
 `resp.request` in `onClientResponse` is the request as the client sent it, so a header set
@@ -201,8 +201,6 @@ Not verifiable locally:
 - What the host does with an aborted instance. AssemblyScript has no `try`/`catch`, so a
   throw from `install()` aborts — whether that becomes a 500 or fails open is unknown.
 - Cache behaviour, and whether `onOriginResponse` really only runs on a cache miss.
-- Whether `setBodyText` in `onClientResponse` replaces the page without the
-  `client_response_body` marker. The devkit assumes it does.
 - Which selectors the host's lol-html build accepts. This repo pins
   `html-rewriter-wasm@0.4.1`; the host's version may differ.
 
@@ -268,8 +266,7 @@ server.mjs               static server, plus an optional live pass-through
 devkit/crypto.mjs        sync SHA-256/HMAC/JWT backing the crypto host calls
 examples/hello/          minimal worker
 examples/crypto/         host-executed HMAC and JWT
-mos-proxy/               the worker this devkit was built for
-mos-proxy-whole-body/    the same proxy with MOS rewriting the whole page
+mos-proxy/               the MOS worker this devkit was built for
 examples/conformance/    probe worker for validating the host
 examples/wire/           wire-format conformance against the SDK's codec
 ```
