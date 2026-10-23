@@ -29,7 +29,7 @@ Bump `PORTED_CORE_VERSION` in `assembly/version.ts`, `config.portedCoreVersion` 
 
 D3 (anonymous cookie) is closed: the port sets `mos_anon_id` under core's rule. IDs are never reused.
 
-## Golden-fixture oracle (not built)
+## Proposed, not built: golden-fixture oracle
 
 The rows above are checked by tests written by hand. A stronger check is to run the core and the port on the same input and diff what each sends to MOS. It is designed here and not built.
 
