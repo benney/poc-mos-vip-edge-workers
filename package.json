@@ -42,7 +42,7 @@
         "html-rewriter-wasm": "0.4.1"
     },
     "config": {
-        "portedCoreVersion": "1.7.0"
+        "portedCoreVersion": "1.8.0"
     },
     "engines": {
         "node": ">=22"

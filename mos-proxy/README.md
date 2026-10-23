@@ -2,7 +2,7 @@
 
 A [MonetizationOS](https://monetizationos.com) proxy running as a VIP edge worker. MOS
 rewrites the page, not the edge: the worker sends the served page to MOS and swaps in
-what comes back. It is a hand port of the core `@monetizationos/proxy`, tracking 1.7.0.
+what comes back. It is a hand port of the core `@monetizationos/proxy`, tracking 1.8.0.
 The intentional differences are in [`DIVERGENCES.md`](DIVERGENCES.md).
 
 ```bash
@@ -93,7 +93,7 @@ WordPress paths that are never reader pages are always skipped, on top of the ig
 `/wp-admin/`, `/wp-login.php`, `/wp-json/`, `/xmlrpc.php`, `/wp-cron.php`, `/wp-includes/`,
 `/wp-content/`, and feeds (`/feed/`, `/comments/feed/`, `/category/news/feed/atom/` and so on).
 
-The `x-mos-proxy-version` header the worker sends is the core version it tracks (1.7.0).
+The `x-mos-proxy-version` header the worker sends is the core version it tracks (1.8.0).
 
 ## Failure handling
 
