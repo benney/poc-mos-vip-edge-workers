@@ -194,7 +194,7 @@ export class EdgeWorkerHost {
 
     /**
      * Whether the host buffers this phase's body: the worker exports `needs_<phase>_body`,
-     * which the SDK has re-exported under that name since 0.7.0.
+     * which the SDK has re-exported under that name since 0.7.1.
      */
     needsBody(phase) {
         return typeof this.ex[`needs_${phase}_body`] === 'function';
