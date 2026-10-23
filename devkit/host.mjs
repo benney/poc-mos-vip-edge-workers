@@ -193,13 +193,11 @@ export class EdgeWorkerHost {
     }
 
     /**
-     * Whether the host buffers this phase's body, by the runtime's marker names rather than
-     * the SDK's: `needs_<phase>_body` (edge-workers 6c106196, 2026-10-14) or `on_<phase>_body`
-     * before it. The SDK's own `<phase>_body` exports match neither, so they don't count.
+     * Whether the host buffers this phase's body: the worker exports `needs_<phase>_body`,
+     * which the SDK has re-exported under that name since 0.7.0.
      */
     needsBody(phase) {
-        return typeof this.ex[`needs_${phase}_body`] === 'function'
-            || typeof this.ex[`on_${phase}_body`] === 'function';
+        return typeof this.ex[`needs_${phase}_body`] === 'function';
     }
 
     get mem() { return this.ex.memory.buffer; }

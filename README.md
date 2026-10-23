@@ -80,18 +80,24 @@ the conformance probe's `/__probe/regex` is there to diff the rest.
 ## Undocumented behaviour
 
 **`fetch()` works in every phase.** Until 2026-10-13 it was client-request only and any
-other phase returned `errorKind: "phase_not_allowed"`. The host lifted that; the change is
-on the SDK's `main` branch, not yet in an npm release. A call can now depend on the
-response, which is what lets the MOS worker decide in `onClientResponse`, after the cache.
+other phase returned `errorKind: "phase_not_allowed"`. The host lifted that and SDK 0.7.0
+shipped it. A call can now depend on the response, which is what lets the MOS worker decide
+in `onClientResponse`, after the cache. The SDK's `errorKind` list changed with it:
+`phase_not_allowed` is gone and `bad_request` and `hops_exhausted` are new.
 
-**The SDK's body markers don't match the runtime's.** A worker gets a phase's body only if
-it exports that phase's marker, but the SDK exports `client_response_body` and friends while
+**Body markers were misnamed until SDK 0.7.1.** A worker gets a phase's body only if it
+exports that phase's marker, but SDK 0.6.0 exported `client_response_body` and friends while
 the runtime looks for `needs_client_response_body` (`on_client_response_body` before
-edge-workers `6c106196`, 2026-10-14). Neither runtime name has ever matched, so on VIP
-`req.body` and `resp.body` stay null and `text()` returns null, as if no marker were exported.
-Every worker here that reads a body exports both runtime names as well, and the devkit
-buffers a body only for those names, so a worker relying on the SDK's markers alone fails
-locally the way it does on VIP. Found on a real deploy of `mos-proxy`, 2026-10-18.
+edge-workers `6c106196`, 2026-10-14). Neither runtime name had ever matched, so on VIP
+`req.body` and `resp.body` stayed null and `text()` returned null, as if no marker were
+exported. Found on a real deploy of `mos-proxy`, 2026-10-18. 0.7.0 switched the SDK's exports to the
+old `on_` names and 0.7.1 to the current `needs_` ones, so workers re-export the SDK's
+markers directly and the devkit buffers a body only for `needs_`.
+
+**Crypto size limits are the host's.** From 0.7.0 `sha256`, `hmacSha256`, `secureCompare`,
+`jwtVerifyHs256` and `getRandomValues` throw a `RangeError` when an input is over a limit
+the host owns and the SDK no longer states. The devkit doesn't model those limits, so an
+oversize input passes locally.
 
 **`onOriginResponse` is the only phase that can read a header you set.**
 `resp.request` in `onClientResponse` is the request as the client sent it, so a header set
