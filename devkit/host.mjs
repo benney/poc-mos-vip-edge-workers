@@ -552,6 +552,7 @@ export class EdgeWorkerHost {
      * Runs onClientResponse on a response from the cache or the origin. `snapshot` is the
      * request before onClientRequest mutated it. The body goes in only when the worker exports
      * the runtime's client response body marker; whatever body the worker leaves is returned.
+     * A body pointer with zero length is a deliberate empty body, not an absent one.
      */
     async clientResponse({ status, headers = [], body = null, snapshot }) {
         const buffered = this.needsBody('client_response');
@@ -568,7 +569,7 @@ export class EdgeWorkerHost {
             status: r.uint(),
             headers: this.live,
             rules: this.htmlRules,
-            body: out.bodyLen > 0 ? this.readUtf8(out.bodyPtr, out.bodyLen) : body,
+            body: out.bodyLen > 0 ? this.readUtf8(out.bodyPtr, out.bodyLen) : out.bodyPtr !== 0 ? '' : body,
         };
     }
 }

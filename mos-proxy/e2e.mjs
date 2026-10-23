@@ -86,12 +86,6 @@ async function request(state, { method = 'GET', url = '/story', headers = [['hos
         },
     }).init();
 
-    // The devkit hands back the input body when the worker's is empty; the output struct says
-    // whether the worker emptied it on purpose.
-    let output = null;
-    const readOutputStruct = host.readOutputStruct.bind(host);
-    host.readOutputStruct = (ptr) => (output = readOutputStruct(ptr));
-
     const phase1 = await host.clientRequest({ method, url, headers, body });
     if (phase1.shortCircuited) return { ...phase1, hitOrigin: false };
 
@@ -109,8 +103,7 @@ async function request(state, { method = 'GET', url = '/story', headers = [['hos
         body: stored.body,
         snapshot: { method, url, headers },
     });
-    const emptied = output.bodyLen === 0 && output.bodyPtr !== 0;
-    return { shortCircuited: false, status: phase2.status, headers: phase2.headers, body: emptied ? '' : phase2.body, hitOrigin };
+    return { shortCircuited: false, status: phase2.status, headers: phase2.headers, body: phase2.body, hitOrigin };
 }
 
 // Fetch calls carry header pairs; responses come back as the devkit's HeaderMap.
@@ -568,6 +561,10 @@ section('no-body statuses');
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { status: 204 } } }) });
     const res = await request(state);
     eq('a 204 override gives an empty body, even with no body key', [res.status, res.body], [204, '']);
+
+    const blank = fresh({ respond: () => decisions({ surfaceBehavior: { http: { body: '' } } }) });
+    const emptied = await request(blank);
+    eq('an empty body replacement at 200 replaces the page', [emptied.status, emptied.body], [200, '']);
 
     const kept = fresh({ respond: () => decisions({ surfaceBehavior: { http: { status: 402 } } }) });
     const paid = await request(kept);
