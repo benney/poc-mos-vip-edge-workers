@@ -1,4 +1,4 @@
-// Drives live mode in headless Chrome against web/fake-org.mjs, which stands in for a
+// Drives live mode in headless Chrome against test/fake-org.mjs, which stands in for a
 // real MOS org. Asserts what the org actually received, so the pass-through is proven
 // to alter nothing. Requires Chrome at the path below; not part of `npm run test:all`.
 import { spawn } from 'node:child_process';
@@ -15,7 +15,7 @@ const CHROME = findChrome();
 const PORT = 9228;
 
 // Self-contained: spawn the fake org and the playground server with live env vars set.
-// server.mjs prefers process.env over .env.local, so a developer's own config is untouched.
+// playground/server.mjs prefers process.env over .env.local, so a developer's own config is untouched.
 const LIVE_ENV = {
     ...process.env,
     MOS_HOST: 'http://localhost:8899',
@@ -25,7 +25,7 @@ const LIVE_ENV = {
     ORIGIN_BASE: 'http://localhost:8899',
 };
 const org = spawn(process.execPath, [new URL('./fake-org.mjs', import.meta.url).pathname], { stdio: 'ignore' });
-const srv = spawn(process.execPath, [new URL('../server.mjs', import.meta.url).pathname], { env: LIVE_ENV, stdio: 'ignore' });
+const srv = spawn(process.execPath, [new URL('../playground/server.mjs', import.meta.url).pathname], { env: LIVE_ENV, stdio: 'ignore' });
 const shutdown = () => { for (const p of [org, srv, chrome]) { try { p.kill('SIGKILL'); } catch {} } };
 process.on('exit', shutdown);
 await new Promise((r) => setTimeout(r, 1500));

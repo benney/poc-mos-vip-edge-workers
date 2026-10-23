@@ -4,11 +4,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ROOT, workerDir, workerFrom } from './paths.mjs';
+import { ROOT, findWorker, workerFrom } from './paths.mjs';
 
 const isTest = process.argv.includes('--test');
-const worker = workerDir(workerFrom(process.argv));
-const name = worker.split('/').pop();
+const { name, dir: worker } = findWorker(workerFrom(process.argv));
 const entry = resolve(ROOT, worker, `assembly/${isTest ? 'test' : 'index'}.ts`);
 const outDir = resolve(ROOT, 'build', name);
 const out = resolve(outDir, isTest ? 'test.wasm' : 'release.wasm');

@@ -4,10 +4,10 @@
 // bundle is functional rather than merely built.
 import { readFileSync } from 'node:fs';
 import { runInThisContext } from 'node:vm';
-import { PRESETS } from './presets.mjs';
+import { PRESETS } from '../playground/presets.mjs';
 
-const wasm = readFileSync(new URL('../web/dist/release.wasm', import.meta.url));
-const bundle = readFileSync(new URL('../web/dist/worker.js', import.meta.url), 'utf8');
+const wasm = readFileSync(new URL('../playground/dist/release.wasm', import.meta.url));
+const bundle = readFileSync(new URL('../playground/dist/worker.js', import.meta.url), 'utf8');
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = '') => {

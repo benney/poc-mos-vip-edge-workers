@@ -1,7 +1,7 @@
 // Runs the conformance probes against the devkit host and prints a report in the same
 // shape as the deployed worker's output, so the two can be diffed directly.
 //
-//   local:    node examples/conformance/check.mjs
+//   local:    node tools/conformance/check.mjs
 //   deployed: curl -sSD - https://<site>/__probe/snapshot -o /dev/null
 //
 // A difference means either the devkit is wrong or the host does something the SDK
@@ -175,4 +175,4 @@ function parseKv(text) {
 
 const unmodelled = report.filter((r) => !r.modelled).length;
 console.log(`\n${report.length} probes recorded, ${unmodelled} not modelled locally.`);
-console.log('Deploy examples/conformance and diff against this to validate the devkit.\n');
+console.log('Deploy tools/conformance and diff against this to validate the devkit.\n');

@@ -69,7 +69,7 @@ const eq = (name, actual, expected) => {
 
 console.log('\nported core version');
 eq('the worker reports the version in package.json config', call(ex.testPortedCoreVersion), pkg.config.portedCoreVersion);
-const divergencesPath = new URL('./DIVERGENCES.md', import.meta.url);
+const divergencesPath = new URL('../DIVERGENCES.md', import.meta.url);
 eq('DIVERGENCES.md names the same core version',
     existsSync(divergencesPath) && readFileSync(divergencesPath, 'utf8').includes(`\`@monetizationos/proxy\` ${pkg.config.portedCoreVersion}`), true);
 

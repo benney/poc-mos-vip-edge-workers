@@ -1,5 +1,5 @@
 node_modules
 build
-web/dist
+playground/dist
 devkit/shims/lolhtml-wasm.cjs
 .env.local

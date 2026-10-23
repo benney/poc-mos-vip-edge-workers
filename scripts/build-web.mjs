@@ -6,10 +6,10 @@
 import { build } from 'esbuild';
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ROOT, workerDir, workerFrom } from './paths.mjs';
+import { ROOT, findWorker, presetsFor, workerFrom } from './paths.mjs';
 
-const worker = workerDir(workerFrom(process.argv));
-const name = worker.split('/').pop();
+const found = findWorker(workerFrom(process.argv));
+const { name } = found;
 const p = (...parts) => resolve(ROOT, ...parts);
 
 const wasm = p('build', name, 'release.wasm');
@@ -17,13 +17,13 @@ if (!existsSync(wasm)) {
     console.error(`missing ${wasm} — run \`node scripts/build.mjs ${name}\` first.`);
     process.exit(1);
 }
-const presets = p(worker, 'presets.mjs');
+const presets = presetsFor(found);
 if (!existsSync(presets)) {
-    console.error(`${worker}/presets.mjs is required for the playground.`);
+    console.error(`${presets} is required for the playground.`);
     process.exit(1);
 }
 
-mkdirSync(p('web/dist'), { recursive: true });
+mkdirSync(p('playground/dist'), { recursive: true });
 
 // Inline lol-html's wasm for the fs shim.
 const lolWasm = readFileSync(p('node_modules/html-rewriter-wasm/dist/html_rewriter_bg.wasm'));
@@ -62,14 +62,14 @@ const common = {
     define: { __dirname: '"/"', __filename: '"/html_rewriter.js"' },
 };
 
-await build({ ...common, entryPoints: [p('web/worker.mjs')], outfile: p('web/dist/worker.js') });
-await build({ ...common, entryPoints: [p('web/ui.mjs')], outfile: p('web/dist/ui.js') });
+await build({ ...common, entryPoints: [p('playground/worker.mjs')], outfile: p('playground/dist/worker.js') });
+await build({ ...common, entryPoints: [p('playground/ui.mjs')], outfile: p('playground/dist/ui.js') });
 
-copyFileSync(wasm, p('web/dist/release.wasm'));
-copyFileSync(p('web/index.html'), p('web/dist/index.html'));
+copyFileSync(wasm, p('playground/dist/release.wasm'));
+copyFileSync(p('playground/index.html'), p('playground/dist/index.html'));
 
 const kb = (f) => `${(readFileSync(f).length / 1024).toFixed(0)} KB`;
-console.log(`built web/dist for "${name}":
-  worker.js     ${kb(p('web/dist/worker.js'))}  (host + lol-html, wasm inlined)
-  ui.js         ${kb(p('web/dist/ui.js'))}
-  release.wasm  ${kb(p('web/dist/release.wasm'))}`);
+console.log(`built playground/dist for "${name}":
+  worker.js     ${kb(p('playground/dist/worker.js'))}  (host + lol-html, wasm inlined)
+  ui.js         ${kb(p('playground/dist/ui.js'))}
+  release.wasm  ${kb(p('playground/dist/release.wasm'))}`);
