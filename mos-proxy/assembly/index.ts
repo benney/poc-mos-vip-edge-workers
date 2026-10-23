@@ -18,18 +18,10 @@ export {
   on_client_request,
   on_client_response,
   // Custom endpoints forward the client body; authenticated routes read it as JSON.
-  client_request_body,
+  needs_client_request_body,
   // Buffers every client response, not just pages; anything else passes straight through.
-  client_response_body,
+  needs_client_response_body,
 } from "@automattic/vip-edge-workers-sdk/assembly/index";
-
-// The runtime's body marker names, which the SDK's don't match: needs_ since
-// edge-workers 6c106196 (2026-10-14), on_ before it. Without these VIP never buffers
-// the page and resp.text() is null. See mos-proxy/README.md.
-export function needs_client_request_body(): void {}
-export function needs_client_response_body(): void {}
-export function on_client_request_body(): void {}
-export function on_client_response_body(): void {}
 
 /** MOS can only read an uncompressed page; a compressed one is served as it is (D7). */
 function isUncompressed(resp: Response): bool {

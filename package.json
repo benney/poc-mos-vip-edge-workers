@@ -33,7 +33,7 @@
         "test:wire": "node scripts/build.mjs wire && node examples/wire/check.mjs"
     },
     "dependencies": {
-        "@automattic/vip-edge-workers-sdk": "0.6.0",
+        "@automattic/vip-edge-workers-sdk": "0.7.1",
         "json-as": "^1.6.0"
     },
     "devDependencies": {
