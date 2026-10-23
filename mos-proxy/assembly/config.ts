@@ -2,6 +2,7 @@
 import { getenv } from "@automattic/vip-edge-workers-sdk/assembly/index";
 
 const DEFAULT_ENDPOINTS_PREFIX = "/mos-endpoints/";
+const DEFAULT_ROUTE_NAMES: string[] = ["offer-redemptions", "access-checks", "surface-decisions", "counter-updates"];
 
 export class AuthRoute {
   method: string = "";
@@ -17,7 +18,6 @@ export class Config {
   mosEndpointsPrefix: string = DEFAULT_ENDPOINTS_PREFIX;
   anonCookie: string = "mos_anon_id";
   jwtCookie: string = "mos_user_jwt";
-  injectScriptUrl: string = "";
   ignorePrefixes: string[] = [];
   ignorePatterns: string[] = [];
   decisionCookiePatterns: string[] = [];
@@ -27,7 +27,7 @@ export class Config {
   /**
    * The API rejects the `http` block unless the key is a secret one:
    * "HTTP request information can only be included when using a secret API key".
-   * Publishable (pk_) tokens therefore omit it, which mirrors the API's own rule.
+   * Publishable (pk_) tokens therefore omit it, which mirrors the API's own rule (D9).
    */
   includeHttp: bool = true;
   valid: bool = false;
@@ -126,7 +126,7 @@ export function loadConfig(): Config {
   c.mosEnvironment = deriveEnvironment(key);
   c.includeHttp = key.startsWith("sk_");
 
-  // Normally derived from the key. An explicit override lets a host supply the env
+  // Port-only (D17). Normally derived from the key. An explicit override lets a host supply the env
   // without the key's secret suffix — used by the playground's live mode, where the
   // real key stays server-side and the browser only sees a redacted one.
   const environment = getenv("MOS_ENVIRONMENT");
@@ -138,13 +138,19 @@ export function loadConfig(): Config {
   if (anon !== null && anon.length > 0) c.anonCookie = anon;
   const jwt = getenv("MOS_JWT_COOKIE");
   if (jwt !== null && jwt.length > 0) c.jwtCookie = jwt;
-  const script = getenv("MOS_INJECT_SCRIPT_URL");
-  if (script !== null) c.injectScriptUrl = script;
   const fallback = getenv("MOS_ANON_FALLBACK");
   if (fallback !== null && fallback == "false") c.anonFallback = false;
 
   const routes = getenv("MOS_AUTHENTICATED_ROUTES");
   if (routes !== null && routes.length > 0) c.authRoutes = parseAuthRoutes(routes);
+  // Core appends these after the configured routes, so a configured route matches first.
+  for (let i = 0; i < DEFAULT_ROUTE_NAMES.length; i++) {
+    const r = new AuthRoute();
+    r.method = "POST";
+    r.matchPath = "/mos-api/" + DEFAULT_ROUTE_NAMES[i];
+    r.mosPath = "/api/v1/" + DEFAULT_ROUTE_NAMES[i];
+    c.authRoutes.push(r);
+  }
 
   // Comma-separated path prefixes.
   const ignore = getenv("MOS_IGNORE_PREFIXES");
@@ -156,7 +162,7 @@ export function loadConfig(): Config {
     }
   }
 
-  // Space-separated path regexes, as the upstream proxy's surfaceDecisionsIgnorePathPatterns.
+  // Path regexes (surfaceDecisionsIgnorePathPatterns): space-separated here, comma-separated upstream (DIVERGENCES D6).
   // Compiled where they are used, so a malformed one aborts only page requests.
   const patterns = getenv("MOS_IGNORE_PATTERNS");
   if (patterns !== null && patterns.length > 0) {
@@ -167,7 +173,7 @@ export function loadConfig(): Config {
     }
   }
 
-  // Space-separated cookie-name regexes, as the upstream proxy's surfaceDecisionsCookies.
+  // Cookie-name regexes (surfaceDecisionsCookies): space-separated here, comma-separated upstream (DIVERGENCES D6).
   c.decisionCookiePatterns = splitSpaces(getenv("MOS_SURFACE_DECISIONS_COOKIES"));
 
   c.decisionsPercent = parsePercent(getenv("MOS_DECISIONS_PERCENT"));

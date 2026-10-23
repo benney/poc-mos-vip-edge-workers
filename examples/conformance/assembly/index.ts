@@ -123,6 +123,18 @@ onClientRequest((req: Request): void => {
   if (probe.startsWith("fetch-client-response-phase")) return;
   if (probe.startsWith("set-body-client-response")) return;
 
+  // abort() is what a thrown AssemblyScript error compiles to, so this takes the same
+  // path as mos-proxy's malformed-JSON abort. It does nothing else, so whatever the
+  // client sees is the host's reaction alone.
+  if (probe.startsWith("abort-client-request")) {
+    abort("probe: deliberate abort in onClientRequest");
+    return;
+  }
+
+  // Pass through so the abort happens in onClientResponse, where the MOS worker decides.
+  // No body marker is exported, so it aborts without reading a body.
+  if (probe.startsWith("abort-client-response")) return;
+
   if (probe.startsWith("body-marker")) {
     const body = req.text();
     req.respondText(200, line("client_request_body_exported", "false")
@@ -143,6 +155,8 @@ onClientRequest((req: Request): void => {
     + "/__probe/random                  getRandomValues\n"
     + "/__probe/kv                      KV bytes + counter round-trip\n"
     + "/__probe/body-marker             is req.body populated without the marker?\n"
+    + "/__probe/abort-client-request    abort the instance in onClientRequest\n"
+    + "/__probe/abort-client-response   abort the instance in onClientResponse\n"
     + "/__probe/memory-{256k..8m}       can the worker allocate and touch this size?\n");
 });
 
@@ -190,10 +204,15 @@ onClientResponse((resp: Response): void => {
     return;
   }
 
-  // The streaming MOS worker replaces the page this way for a workflow's own body. The
-  // body marker is not exported, so this asks whether the host honours it anyway.
+  // A worker replaces the page this way when MOS returns a body. The runtime's body
+  // marker is not exported here, so this asks whether the host honours it anyway.
   if (probe.startsWith("set-body-client-response")) {
     resp.setBodyText("PROBE-REPLACED-BODY");
+    return;
+  }
+
+  if (probe.startsWith("abort-client-response")) {
+    abort("probe: deliberate abort in onClientResponse");
     return;
   }
 

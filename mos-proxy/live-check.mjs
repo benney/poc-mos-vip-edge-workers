@@ -6,6 +6,10 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// The version the worker reports is the ported core's, when package.json names one.
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const portedCoreVersion = pkg.config?.portedCoreVersion;
+
 import { findChrome } from '../devkit/chrome.mjs';
 const CHROME = findChrome();
 const PORT = 9228;
@@ -94,7 +98,8 @@ ok('env carries publishable token', st.env.includes('MOS_SECRET_KEY=pk_test_live
 ok('env carries MOS_ENVIRONMENT', st.env.includes('MOS_ENVIRONMENT=test_live123'));
 ok('decisions editor is read-only', st.decisionsReadOnly === true);
 ok('LIVE API badge shown', st.badges.includes('LIVE API'), st.badges.join('|'));
-ok('real org decision applied to html', st.body.includes('from-live-org'));
+// Live mode sends a pk_ token, so the page never goes to the org and only a header op applies.
+ok('real org decision applied', /x-mos-live/.test(st.body) && st.body.includes('from-live-org'), st.body.slice(0, 200));
 ok('real response body shown in API call card', st.mosCallCard.includes('live-anon-99'));
 
 console.log('\nwhat the org actually received');
@@ -103,10 +108,12 @@ const decisionsCall = got.find((g) => g.url === '/api/v1/surface-decisions');
 ok('org got the decisions call', !!decisionsCall);
 ok('worker built its own Bearer token', decisionsCall.headers.authorization === 'Bearer pk_test_live123', decisionsCall.headers.authorization);
 ok('proxy did not inject anything else', !('x-injected' in decisionsCall.headers));
-ok('proxy forwarded proxy-version header', decisionsCall.headers['x-mos-proxy-version'] === '1.5.1');
+const version = decisionsCall.headers['x-mos-proxy-version'];
+ok('proxy forwarded proxy-version header', portedCoreVersion ? version === portedCoreVersion : /^\d+\.\d+\.\d+$/.test(version ?? ''), String(version));
 const sent = JSON.parse(decisionsCall.body);
 ok('surface slug from live config', sent.surfaceSlug === 'live-surface', sent.surfaceSlug);
 ok('no sk_ key anywhere in the request', !JSON.stringify(decisionsCall).includes('sk_'));
+ok('page not sent with a publishable token', sent.http === undefined);
 
 console.log('\nreal origin fetch');
 await ev(`(() => { document.getElementById('url').value = '/page'; const c = document.getElementById('liveOrigin'); c.checked = true; c.dispatchEvent(new Event('change')); })()`);
@@ -117,7 +124,7 @@ st = await ev(`(() => ({
   final: [...document.querySelectorAll('.card')].find(c => c.querySelector('h3')?.textContent === 'Final response')?.textContent ?? '',
 }))()`);
 ok('origin html pulled from the org', st.originBody.includes('Real origin copy.'), st.originBody.slice(0, 80));
-ok('live decision rewrote the real page', st.final.includes('from-live-org') && st.final.includes('Real origin copy.'));
+ok('real page served as fetched', st.final.includes('Real origin copy.') && !st.final.includes('id="from-live-org"'));
 
 console.log('\nsk_ key guard');
 await ev(`(() => { const e = document.getElementById('env');

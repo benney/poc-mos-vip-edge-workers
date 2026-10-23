@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { writeFileSync } from 'node:fs';
 
 const received = [];
+const safeParse = (text) => { try { return JSON.parse(text); } catch { return null; } };
 createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -13,20 +14,21 @@ createServer(async (req, res) => {
     writeFileSync('/tmp/fake-org-received.json', JSON.stringify(received, null, 2));
 
     if (req.url === '/api/v1/surface-decisions') {
+        // A secret key sends the page, and MOS answers with it transformed. A publishable
+        // one (live mode) sends no `http`, so the decision is a header op instead.
+        const page = safeParse(body)?.http?.proxyOrigin?.body;
+        const http = page == null
+            ? { addHeaders: [{ name: 'x-mos-live', value: 'from-live-org' }] }
+            : { body: page.replace('<body>', '<body><div id="from-live-org">LIVE ORG DECISION</div>') };
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
             status: 'success',
             identity: { identifier: 'live-anon-99', isAuthenticated: false, authType: 'anonymous', jwtClaims: {} },
             features: {},
             customer: { hasProducts: true },
-            surfaceBehavior: {},
+            surfaceBehavior: { http },
             componentsSkipped: false,
-            componentBehaviors: {
-                liveBanner: {
-                    metadata: { cssSelector: '.article-body' },
-                    content: { before: [{ type: 'html', content: '<div id="from-live-org">LIVE ORG DECISION</div>' }] },
-                },
-            },
+            componentBehaviors: {},
         }));
         return;
     }

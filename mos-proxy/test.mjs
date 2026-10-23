@@ -1,31 +1,8 @@
-// Node harness: instantiates the compiled test.wasm, stubs the two host imports,
-// and decodes the msgpack rule payload the worker submits to html.apply_rewrite_rules.
-import { readFileSync } from 'node:fs';
+// Node harness: instantiates the compiled test.wasm, stubs the host imports, and
+// asserts the shared modules (config, cookies, endpoints, behavior, identity, sampling).
+import { readFileSync, existsSync } from 'node:fs';
 
-const KIND = { 0x01: 'insertBefore', 0x02: 'insertAfter', 0x03: 'prependInside', 0x04: 'appendInside', 0x05: 'replace', 0x06: 'remove', 0x10: 'setAttr', 0x11: 'removeAttr', 0x12: 'rewriteAttrRe', 0x20: 'setText' };
-
-let installed = [];
-
-function decodeRules(bytes) {
-    let p = 0;
-    const u8 = () => bytes[p++];
-    const arrLen = () => { const b = u8(); if ((b & 0xf0) === 0x90) return b & 0x0f; if (b === 0xdc) { const n = (u8() << 8) | u8(); return n; } throw new Error('bad array ' + b.toString(16)); };
-    const str = () => { const b = u8(); let n; if ((b & 0xe0) === 0xa0) n = b & 0x1f; else if (b === 0xd9) n = u8(); else if (b === 0xda) n = (u8() << 8) | u8(); else throw new Error('bad str ' + b.toString(16)); const s = Buffer.from(bytes.slice(p, p + n)).toString('utf8'); p += n; return s; };
-    const uint = () => { const b = u8(); if (b <= 0x7f) return b; if (b === 0xcd) return (u8() << 8) | u8(); throw new Error('bad uint ' + b.toString(16)); };
-
-    const count = arrLen();
-    const out = [];
-    for (let i = 0; i < count; i++) {
-        const fields = arrLen();
-        const kind = uint();
-        const selector = str();
-        const args = [];
-        for (let j = 0; j < fields - 2; j++) args.push(str());
-        out.push({ op: KIND[kind] ?? kind, selector, args });
-    }
-    return out;
-}
-
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const wasm = readFileSync(new URL('../build/mos-proxy/test.wasm', import.meta.url));
 let inst;
 let envMap = {};
@@ -54,13 +31,6 @@ const imports = {
             return (BigInt(ptr) << 32n) | BigInt(bytes.length);
         },
         fetch() { throw new Error('fetch should not be reached in these tests'); },
-    },
-    html: {
-        apply_rewrite_rules(ptr, len) {
-            const mem = new Uint8Array(inst.exports.memory.buffer, ptr, len);
-            installed = decodeRules(Uint8Array.from(mem));
-            return 0; // host OK
-        },
     },
 };
 
@@ -97,6 +67,12 @@ const eq = (name, actual, expected) => {
     else { fail++; console.log(`  FAIL ${name}\n       expected ${e}\n       actual   ${a}`); }
 };
 
+console.log('\nported core version');
+eq('the worker reports the version in package.json config', call(ex.testPortedCoreVersion), pkg.config.portedCoreVersion);
+const divergencesPath = new URL('./DIVERGENCES.md', import.meta.url);
+eq('DIVERGENCES.md names the same core version',
+    existsSync(divergencesPath) && readFileSync(divergencesPath, 'utf8').includes(`\`@monetizationos/proxy\` ${pkg.config.portedCoreVersion}`), true);
+
 console.log('\ncookies');
 const cookie = (h, n) => call(ex.testReadCookie, h, n);
 eq('reads a cookie', cookie('a=1; mos_anon_id=abc123; b=2', 'mos_anon_id'), 'abc123');
@@ -131,139 +107,43 @@ eq('ids spread evenly (40-60% under 50)', underHalf > 800 && underHalf < 1200, t
 
 console.log('\nidentity (port of buildIdentity)');
 const ident = (a, j) => JSON.parse(call(ex.testBuildIdentity, a, j));
-eq('jwt wins over anon', ident('anon1', 'jwt1'),
-    { createAnonymousIdentifier: false, anonymousIdentifier: null, userJwt: 'jwt1', createAnonymousIdentifierFallback: true });
-eq('anon when no jwt', ident('anon1', ''),
-    { createAnonymousIdentifier: false, anonymousIdentifier: 'anon1', userJwt: null, createAnonymousIdentifierFallback: false });
-eq('mint when neither', ident('', ''),
-    { createAnonymousIdentifier: true, anonymousIdentifier: null, userJwt: null, createAnonymousIdentifierFallback: false });
+// Only the keys that apply are sent, as core's Identity union has it.
+eq('jwt wins over anon', ident('anon1', 'jwt1'), { userJwt: 'jwt1', createAnonymousIdentifierFallback: true });
+eq('anon when no jwt', ident('anon1', ''), { anonymousIdentifier: 'anon1' });
+eq('mint when neither', ident('', ''), { createAnonymousIdentifier: true });
 
-const compile = (decisions, script = '') => JSON.parse(call(ex.testCompilePlan, JSON.stringify(decisions), script));
-const apply = (plan) => callInt(ex.testApplyPlan, JSON.stringify(plan));
+// Core appends these after the configured routes.
+const DEFAULT_ROUTES = ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates']
+    .map((n) => `POST /mos-api/${n}>/api/v1/${n}`);
+const routesWith = (...configured) => [...configured, ...DEFAULT_ROUTES].join('|');
 
-console.log('\nplan compilation');
-const base = { status: 'success', identity: { identifier: 'anon-new', isAuthenticated: false }, componentsSkipped: false, componentBehaviors: {} };
+console.log('\nidentity from the origin response (port of getExistingCookies)');
+setEnv();
+const decisionIdentity = (cookies, setCookies = []) => JSON.parse(call(ex.testIdentityForDecision, cookies, setCookies.join('\n')));
+eq('request cookies when the origin sets neither', decisionIdentity('mos_anon_id=req-anon', ['wp_session=x; Path=/']), { anonymousIdentifier: 'req-anon' });
+eq('origin jwt beats request cookies', decisionIdentity('mos_anon_id=req-anon', ['mos_user_jwt=origin.jwt; Path=/']),
+    { userJwt: 'origin.jwt', createAnonymousIdentifierFallback: true });
+eq('origin anon replaces the request anon', decisionIdentity('mos_anon_id=req-anon', ['mos_anon_id=origin-anon; Path=/']), { anonymousIdentifier: 'origin-anon' });
+eq('either origin cookie hides the request jwt', decisionIdentity('mos_user_jwt=req.jwt', ['mos_anon_id=origin-anon']), { anonymousIdentifier: 'origin-anon' });
+eq('an origin cookie with an empty value still counts as set', decisionIdentity('mos_anon_id=req-anon', ['mos_anon_id=; Max-Age=0']), { createAnonymousIdentifier: true });
+eq('values are percent-decoded', decisionIdentity('mos_anon_id=a%20b'), { anonymousIdentifier: 'a b' });
+eq('and so are origin values', decisionIdentity('', ['mos_user_jwt=x%2By; Path=/']), { userJwt: 'x+y', createAnonymousIdentifierFallback: true });
 
-eq('carries minted identifier', compile(base).a, 'anon-new');
-eq('injects script into head', compile(base, 'https://cdn.example.com/mos.js').r,
-    [{ o: 'ai', s: 'head', h: '<script src="https://cdn.example.com/mos.js" async defer></script>' }]);
-
-eq('componentsSkipped drops component rules', compile({
-    ...base,
-    componentsSkipped: true,
-    componentBehaviors: { paywall: { metadata: { cssSelector: '.article' }, content: { append: [{ type: 'html', content: '<b>x</b>' }] } } },
-}).r, []);
-
-eq('before/prepend/append/after', compile({
-    ...base,
-    componentBehaviors: {
-        paywall: {
-            metadata: { cssSelector: '.article-body' },
-            content: {
-                before: [{ type: 'html', content: '<i>B</i>' }],
-                prepend: [{ type: 'html', content: '<i>P</i>' }],
-                append: [{ type: 'html', content: '<i>A</i>' }],
-                after: [{ type: 'html', content: '<i>F</i>' }],
-            },
-        },
-    },
-}).r, [
-    { o: 'ib', s: '.article-body', h: '<i>B</i>' },
-    { o: 'ia', s: '.article-body', h: '<i>F</i>' },
-    { o: 'pi', s: '.article-body', h: '<i>P</i>' },
-    { o: 'ai', s: '.article-body', h: '<i>A</i>' },
-]);
-
-eq('list order preserved in one payload', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: '#x' }, content: { after: [{ type: 'html', content: '1' }, { type: 'html', content: '2' }, { type: 'html', content: '3' }] } } },
-}).r, [{ o: 'ia', s: '#x', h: '123' }]);
-
-eq('remove -> replace, keeps before/after, drops inside', compile({
-    ...base,
-    componentBehaviors: {
-        c: {
-            metadata: { cssSelector: '.gated' },
-            content: {
-                remove: true,
-                before: [{ type: 'html', content: '<promo/>' }],
-                prepend: [{ type: 'html', content: 'GONE' }],
-                append: [{ type: 'html', content: 'GONE' }],
-                after: [{ type: 'html', content: '<foot/>' }],
-            },
-        },
-    },
-}).r, [
-    { o: 'ib', s: '.gated', h: '<promo/>' },
-    { o: 'ia', s: '.gated', h: '<foot/>' },
-    { o: 'rp', s: '.gated', h: '' },
-]);
-
-eq('text type is escaped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'text', content: '<script>&bad' }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '&lt;script&gt;&amp;bad' }]);
-
-eq('element type -> web component tag', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'element', schema: 'mos:paywall@2', props: { tier: 'gold', n: 3 } }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '<mos-paywall version="2" props="{&quot;tier&quot;:&quot;gold&quot;,&quot;n&quot;:3}"></mos-paywall>' }]);
-
-eq('uppercase type still matches', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'HTML', content: '<b/>' }] } } },
-}).r, [{ o: 'ai', s: 'p', h: '<b/>' }]);
-
-eq(':last-child selector skipped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'div:last-child' }, content: { append: [{ type: 'html', content: 'x' }] } } },
-}).r, []);
-
-eq('null cssSelector skipped', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: {}, content: { append: [{ type: 'html', content: 'x' }] } } },
-}).r, []);
-
-eq('unknown element type renders empty (no abort)', compile({
-    ...base,
-    componentBehaviors: { c: { metadata: { cssSelector: 'p' }, content: { append: [{ type: 'mystery' }] } } },
-}).r, []);
-
-console.log('\nHtmlRules replay (decoded msgpack sent to host)');
-installed = [];
-const applied = apply(({
-    a: 'anon-1',
-    r: [
-        { o: 'ib', s: '.a', h: '<x/>' },
-        { o: 'pi', s: 'head', h: '<script/>' },
-        { o: 'rp', s: '.gated', h: '' },
-        { o: 'zz', s: '.bad', h: 'ignored' },
-    ],
-}));
-eq('applied count skips unknown op', applied, 3);
-eq('msgpack rules match', installed, [
-    { op: 'insertBefore', selector: '.a', args: ['<x/>'] },
-    { op: 'prependInside', selector: 'head', args: ['<script/>'] },
-    { op: 'replace', selector: '.gated', args: [''] },
-]);
-
-installed = [];
-eq('empty plan installs nothing', apply({ a: '', r: [] }), 0);
-eq('no host call on empty plan', installed, []);
-
-// 300 rules > MAX_RULES 200
-installed = [];
-const many = { a: '', r: Array.from({ length: 300 }, (_, i) => ({ o: 'ai', s: `#n${i}`, h: 'x' })) };
-eq('rule count capped at 200', apply(many), 200);
-eq('host received exactly 200', installed.length, 200);
-
-// oversize payload must stop before the 64 KiB host limit
-installed = [];
-const big = { a: '', r: Array.from({ length: 40 }, (_, i) => ({ o: 'ai', s: `#b${i}`, h: 'z'.repeat(4000) })) };
-const bigApplied = apply(big);
-const bytes = installed.reduce((n, r) => n + r.selector.length + r.args.join('').length, 0);
-eq('payload capped under 64 KiB', bytes < 64 * 1024, true);
-eq('stopped early rather than aborting', bigApplied < 40, true);
+console.log('\nanonymous cookie (port of defaultPersistIdentity)');
+setEnv();
+const setsAnon = (cookies, setCookies, identifier, isAuthenticated) =>
+    ex.testShouldSetAnonCookie(...[cookies, setCookies.join('\n'), identifier].flatMap(put), isAuthenticated ? 1 : 0) === 1;
+eq('a minted id is set', setsAnon('', [], 'new-1', false), true);
+eq('nothing without an identifier', setsAnon('', [], '', false), false);
+eq('an existing anon cookie is not re-set', setsAnon('mos_anon_id=a1', [], 'a1', false), false);
+eq('jwt fallback: unauthenticated, no anon cookie, set', setsAnon('mos_user_jwt=j.w.t', [], 'new-1', false), true);
+eq('jwt fallback: authenticated, not set', setsAnon('mos_user_jwt=j.w.t', [], 'user-1', true), false);
+eq('jwt fallback: unauthenticated but the request has an anon cookie, not set', setsAnon('mos_user_jwt=j.w.t; mos_anon_id=a1', [], 'new-1', false), false);
+eq('jwt fallback: the origin jwt hides the request anon cookie, set', setsAnon('mos_anon_id=a1', ['mos_user_jwt=o.j.t; Path=/'], 'new-1', false), true);
+eq('jwt fallback: the origin anon cookie counts, not set', setsAnon('mos_user_jwt=j.w.t', ['mos_anon_id=o1; Path=/'], 'o1', false), false);
+setEnv({ MOS_ANON_FALLBACK: 'false' });
+eq('jwt without the fallback flag: not set', setsAnon('mos_user_jwt=j.w.t', [], 'new-1', false), false);
+setEnv();
 
 console.log('\nconfig from env vars');
 setEnv();
@@ -283,11 +163,11 @@ eq('test env key', cfgFields()[2], 'test_zz99');
 // The API rejects `http` unless the key is a secret one.
 eq('sk_ key includes http', cfgFields()[9], 'true');
 setEnv({ MOS_SECRET_KEY: 'pk_preview_abc123' });
-eq('pk_ token omits http', cfgFields()[9], 'false');
+eq('pk_ token omits http (D9)', cfgFields()[9], 'false');
 setEnv();
 
 setEnv({ MOS_ENVIRONMENT: 'live_override' });
-eq('MOS_ENVIRONMENT overrides derivation', cfgFields()[2], 'live_override');
+eq('MOS_ENVIRONMENT overrides derivation (D17)', cfgFields()[2], 'live_override');
 setEnv({ MOS_ENVIRONMENT: '' });
 eq('empty override falls back to derivation', cfgFields()[2], 'live_ab12cd');
 
@@ -299,23 +179,24 @@ f = cfgFields();
 eq('cookie names overridable', [f[4], f[5]], ['wp_anon', 'wp_jwt']);
 
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST /wp-json/mos/checkout>/api/v1/checkout, put /wp-json/mos/profile>/api/v1/profile' });
-eq('auth routes parsed, method upcased', cfgFields()[7],
-    'POST /wp-json/mos/checkout>/api/v1/checkout|PUT /wp-json/mos/profile>/api/v1/profile');
+eq('auth routes parsed, method upcased, defaults after', cfgFields()[7],
+    routesWith('POST /wp-json/mos/checkout>/api/v1/checkout', 'PUT /wp-json/mos/profile>/api/v1/profile'));
 
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'GET /nope>/api/v1/nope, POST /ok>/api/v1/ok, garbage, POST /no-arrow, DELETE /d>/x, POST >/empty-match' });
-eq('rejects GET/DELETE and malformed entries', cfgFields()[7], 'POST /ok>/api/v1/ok');
+eq('rejects GET/DELETE and malformed entries', cfgFields()[7], routesWith('POST /ok>/api/v1/ok'));
 
 setEnv({ MOS_IGNORE_PREFIXES: '/wp-admin, /wp-login.php,', MOS_IGNORE_PATTERNS: '^/feed(/|$)   \\.amp$' });
 f = cfgFields();
 eq('ignore prefixes split on commas', f[8], '/wp-admin|/wp-login.php');
-eq('ignore patterns split on spaces', f[10], '^/feed(/|$) \\.amp$');
+eq('ignore patterns split on spaces (D6)', f[10], '^/feed(/|$) \\.amp$');
 setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST />/api/v1/root' });
-eq('root matchPath is valid', cfgFields()[7], 'POST />/api/v1/root');
+eq('root matchPath is valid', cfgFields()[7], routesWith('POST />/api/v1/root'));
 setEnv({ MOS_SURFACE_DECISIONS_COOKIES: '^__session$   ^mos_' });
-eq('decision cookie patterns split on spaces', cfgFields()[11], '^__session$ ^mos_');
+eq('decision cookie patterns split on spaces (D6)', cfgFields()[11], '^__session$ ^mos_');
 setEnv();
+eq('default routes with none configured', cfgFields()[7], routesWith());
 eq('no decision cookies by default', cfgFields()[11], '');
-eq('decisions percent defaults to 100', cfgFields()[12], '100');
+eq('decisions percent defaults to 100 (D4)', cfgFields()[12], '100');
 const percent = (v) => (setEnv({ MOS_DECISIONS_PERCENT: v }), cfgFields()[12]);
 eq('decisions percent parsed and clamped', ['0', '25', ' 50 ', '100', '150', '-5', 'abc', '', '12.5', '99999999999'].map(percent),
     ['0', '25', '50', '100', '100', '0', '100', '100', '100', '100']);
@@ -360,6 +241,13 @@ eq('second route matches', route('/wp-json/mos/profile', 'PATCH'), 'PATCH /api/v
 eq('unknown path no match', route('/other', 'POST'), '');
 setEnv();
 eq('no routes configured -> no match', route('/wp-json/mos/checkout', 'POST'), '');
+eq('default route matches', route('/mos-api/access-checks', 'POST'), 'POST /api/v1/access-checks');
+eq('default routes are POST only', route('/mos-api/access-checks', 'PUT'), '');
+eq('all four defaults', ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates'].map((n) => route(`/mos-api/${n}`, 'POST')),
+    ['offer-redemptions', 'access-checks', 'surface-decisions', 'counter-updates'].map((n) => `POST /api/v1/${n}`));
+setEnv({ MOS_AUTHENTICATED_ROUTES: 'POST /mos-api/access-checks>/api/v1/custom' });
+eq('a configured route wins over the default for the same path', route('/mos-api/access-checks', 'POST'), 'POST /api/v1/custom');
+setEnv();
 
 console.log('\nauthenticated route payload (JWT passthrough)');
 setEnv();
@@ -371,15 +259,17 @@ eq('sk_ key sends http on authed routes', m.http !== undefined, true);
 eq('client body keys preserved', [m.plan, m.qty], ['gold', 2]);
 eq('JWT forwarded from cookie', m.identity.userJwt, 'eyJhbG.payload.sig');
 eq('JWT sets fallback flag', m.identity.createAnonymousIdentifierFallback, true);
-eq('no anon id when JWT present', m.identity.anonymousIdentifier, null);
+eq('no anon id when JWT present', m.identity.anonymousIdentifier, undefined);
 eq('http metadata attached', m.http.url, 'https://site.test/wp-json/mos/checkout');
+eq('absent userAgent, clientIP and referer are left out', Object.keys(m.http), ['url']);
 
 m = merged('{"plan":"gold"}', 'mos_anon_id=anon-77');
 eq('anon identity when no JWT', m.identity.anonymousIdentifier, 'anon-77');
-eq('anon identity carries no JWT', m.identity.userJwt, null);
+eq('anon identity carries no JWT', m.identity.userJwt, undefined);
+eq('anon identity is just the identifier', m.identity, { anonymousIdentifier: 'anon-77' });
 
 m = merged('{}', '');
-eq('mints when no cookies', m.identity.createAnonymousIdentifier, true);
+eq('mints when no cookies', m.identity, { createAnonymousIdentifier: true });
 
 m = merged('{"identity":{"userJwt":"forged"},"http":{"url":"evil"}}', 'mos_user_jwt=real.jwt.sig');
 eq('client cannot forge identity', m.identity.userJwt, 'real.jwt.sig');
@@ -399,7 +289,7 @@ eq('custom JWT cookie name honoured', m.identity.userJwt, 'custom.jwt.sig');
 
 setEnv({ MOS_ANON_FALLBACK: 'false' });
 m = merged('{}', 'mos_user_jwt=a.b.c');
-eq('fallback flag off when configured', m.identity.createAnonymousIdentifierFallback, false);
+eq('fallback flag off when configured: the key is left out', m.identity, { userJwt: 'a.b.c' });
 
 setEnv({ MOS_SECRET_KEY: 'pk_preview_abc123' });
 m = merged('{"plan":"gold"}', 'mos_user_jwt=a.b.c');

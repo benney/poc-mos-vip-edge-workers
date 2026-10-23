@@ -20,10 +20,19 @@ const routes = [
     '/__probe/memory-2m',
     '/__probe/memory-4m',
     '/__probe/memory-8m',
+    '/__probe/abort-client-request',
+    '/__probe/abort-client-response',
 ];
 
 for (const route of routes) {
-    const response = await fetch(new URL(route, base));
+    let response;
+    try {
+        response = await fetch(new URL(route, base));
+    } catch (error) {
+        // An aborted instance may drop the connection rather than answer.
+        console.log(`\nfailed ${route}: ${error.message}`);
+        continue;
+    }
     const body = (await response.text()).trim();
     console.log(`\n${response.status} ${route}`);
     for (const [name, value] of response.headers) {

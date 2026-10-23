@@ -3,7 +3,8 @@ import { Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/ind
 
 /**
  * Extra resource fields, as the upstream proxy's ResourceProvider: return only the keys to add or
- * override. Workflows read them as `resource.<name>`. Leave `meta` to MOS, which fills it from the page.
+ * override. Workflows read them as `resource.<name>`. Leave `meta` to MOS, which fills it from the page (D2).
+ * Values are strings only (D14).
  *
  * Runs in onClientResponse, so the origin's response headers are available too, e.g.
  * `resp.headers.get("x-wp-post-id")`.

@@ -10,6 +10,13 @@ export function firstIp(value: string): string {
   return comma < 0 ? value.trim() : value.slice(0, comma).trim();
 }
 
+/** The client IP for `http.clientIP`: the first x-forwarded-for hop, or null when absent or empty (D10). */
+export function clientIpFrom(xff: string | null): string | null {
+  if (xff === null) return null;
+  const ip = firstIp(xff);
+  return ip.length == 0 ? null : ip;
+}
+
 export function stripLeadingSlash(s: string): string {
   let i = 0;
   while (i < s.length && s.charCodeAt(i) == 0x2f) i++;
@@ -61,6 +68,7 @@ export function isWordPressFeed(path: string): bool {
   return n >= 3 && segments[n - 2] == "feed" && FEED_TYPES.includes(segments[n - 1]);
 }
 
+// WordPress paths and feeds are always skipped, and MOS_IGNORE_PREFIXES is port-only (D5).
 function isIgnoredPath(cfg: Config, path: string): bool {
   for (let i = 0; i < WORDPRESS_PREFIXES.length; i++) {
     if (path.startsWith(WORDPRESS_PREFIXES[i])) return true;
@@ -86,7 +94,7 @@ export function wantsDecision(cfg: Config, req: Request, resp: Response): bool {
   return !isIgnoredPath(cfg, req.path);
 }
 
-/** A request-time guess, for the few things that must be decided before the response exists. */
+/** A request-time guess, for the few things that must be decided before the response exists (D7). */
 export function mayBePage(cfg: Config, req: Request): bool {
   return !looksLikeAsset(req.path) && !isIgnoredPath(cfg, req.path);
 }

@@ -21,6 +21,8 @@ curl -sSD - https://<site>/__probe/fetch-client-response-phase -o /dev/null | gr
 curl -sS     https://<site>/__probe/set-body-client-response
 curl -sS     https://<site>/__probe/kv
 curl -sS     https://<site>/__probe/memory-1m
+curl -sSD - https://<site>/__probe/abort-client-request
+curl -sSD - https://<site>/__probe/abort-client-response
 ```
 
 The same live probes can be run together with:
@@ -38,19 +40,20 @@ A difference means either a devkit bug or an undocumented host behaviour.
 | `/__probe/snapshot`                                 | Does `resp.request` in `onOriginResponse` include request-phase mutations, and does `onClientResponse` correctly _not_? |
 | `/__probe/fetch-client-phase`                       | Does `fetch()` work in the allowed phase?                                                                               |
 | `/__probe/fetch-origin-phase`                       | Does it work in `onOriginResponse` too? Refused with `phase_not_allowed` until the host change of 2026-10-13             |
-| `/__probe/fetch-client-response-phase`              | Does it work in `onClientResponse`, where both MOS workers now call it?                                                 |
-| `/__probe/set-body-client-response`                 | Does `setBodyText` in `onClientResponse` replace the page without the `client_response_body` marker?                     |
+| `/__probe/fetch-client-response-phase`              | Does it work in `onClientResponse`, where the MOS worker calls it?                                                          |
+| `/__probe/set-body-client-response`                 | Does `setBodyText` in `onClientResponse` replace the page without the runtime's `needs_client_response_body` marker exported? |
 | `/__probe/rules-in-request-phase`                   | Are `HtmlRules` registered in a request phase really dropped?                                                           |
 | `/__probe/selector`                                 | Which selectors does the host's lol-html accept? One per request via `PROBE_SELECTOR`.                                  |
 | `/__probe/regex`                                    | Does the host's Rust regex give what the devkit's JS stand-in gives: named groups, Unicode, templates, UTF-16 indices?  |
 | `/__probe/random`                                   | Does `getRandomValues` fill the buffer?                                                                                 |
 | `/__probe/kv`                                       | Do KV bytes and counters round-trip?                                                                                    |
 | `/__probe/body-marker`                              | Is `req.body` null without the body marker exported?                                                                    |
+| `/__probe/abort-client-request`                     | What does the host serve when the worker aborts in `onClientRequest`: an error status, the unmodified page, or something else? |
+| `/__probe/abort-client-response`                    | What does the host serve when the worker aborts in `onClientResponse`: an error status, the unmodified page, or something else? |
 | `/__probe/memory-256k` through `/__probe/memory-8m` | Can the worker allocate and touch each size?                                                                            |
 
-The snapshot probe matters most: the decide-then-rewrite pattern, and
-`mos-proxy`'s plan header, both depend on `onOriginResponse` seeing a header set in
-`onClientRequest`.
+The snapshot probe documents which phase sees a request-phase header. The MOS worker no
+longer depends on it: it decides in `onClientResponse` from the client's request.
 
 Probes live on separate routes because AssemblyScript has no `try`/`catch`: an
 unsupported selector throws from `install()`, which aborts the instance. Isolating each

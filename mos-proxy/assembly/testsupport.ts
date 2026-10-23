@@ -2,9 +2,8 @@
 import { JSON } from "json-as";
 import { loadConfig } from "./config";
 import { Cookies } from "@automattic/vip-edge-workers-sdk/assembly/index";
-import { cookieValue } from "./cookies";
-import { buildIdentity, HttpPayload } from "./decisions";
-import { mergeBody } from "./endpoints";
+import { HttpPayload } from "./decisions";
+import { identityForDecision, mergeBody, shouldSetAnonCookie } from "./endpoints";
 
 export { customEndpointTarget, matchRoute, mergeBody } from "./endpoints";
 
@@ -12,11 +11,7 @@ export { customEndpointTarget, matchRoute, mergeBody } from "./endpoints";
 export function buildIdentityForTest(body: string, cookieHeader: string, url: string): string {
   const cfg = loadConfig();
   const cookies = new Cookies(cookieHeader);
-  const identity = buildIdentity(
-    cookieValue(cookies, cfg.anonCookie),
-    cookieValue(cookies, cfg.jwtCookie),
-    cfg.anonFallback,
-  );
+  const identity = identityForDecision(cfg, cookies, []);
   const http = new HttpPayload();
   http.url = url;
   return mergeBody(body, identity, cfg.includeHttp ? http : null);
@@ -59,3 +54,17 @@ export function compileBehaviorSummary(surfaceBehaviorJson: string): string {
 }
 
 export function statusAllowsBodyFor(status: i32): bool { return statusAllowsBody(status); }
+
+/** Cookie header, newline-separated origin Set-Cookie values -> identity JSON for a decision. */
+export function identityForDecisionJson(cookieHeader: string, setCookies: string): string {
+  const lines: string[] = setCookies.length == 0 ? [] : setCookies.split("\n");
+  return JSON.stringify(identityForDecision(loadConfig(), new Cookies(cookieHeader), lines));
+}
+
+/** Cookie header, origin Set-Cookie values, the id MOS returned and its isAuthenticated -> whether the anon cookie is set. */
+export function shouldSetAnonCookieFor(cookieHeader: string, setCookies: string, identifier: string, isAuthenticated: bool): bool {
+  const cfg = loadConfig();
+  const cookies = new Cookies(cookieHeader);
+  const lines: string[] = setCookies.length == 0 ? [] : setCookies.split("\n");
+  return shouldSetAnonCookie(cfg, cookies, lines, identityForDecision(cfg, cookies, lines), identifier, isAuthenticated);
+}

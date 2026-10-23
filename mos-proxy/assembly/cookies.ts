@@ -9,7 +9,8 @@ export function cookieValue(cookies: Cookies, name: string): string {
 /**
  * The cookies sent to surface decisions as `http.cookies`, as the upstream proxy's
  * `surfaceDecisionsCookies`: request cookies whose name matches a pattern, then the origin's
- * Set-Cookie values, which win. Null when nothing matches, so the field is left out.
+ * Set-Cookie values, which win. Null when nothing matches, so the field is left out. A malformed
+ * pattern aborts (D6).
  */
 export function selectDecisionCookies(patterns: string[], cookies: Cookies, setCookies: string[]): Map<string, string> | null {
   if (patterns.length == 0) return null;
@@ -31,6 +32,22 @@ export function selectDecisionCookies(patterns: string[], cookies: Cookies, setC
     if (name.length > 0 && matchesAny(res, name)) selected.set(name, decodeCookieValue(trimSpaces(pair.slice(eq + 1))));
   }
   return selected.size > 0 ? selected : null;
+}
+
+/**
+ * The decoded value of the first Set-Cookie named `name`, or null when none is. An empty value
+ * (an expiry, say) still counts as set, as core's `getExistingCookies` treats it.
+ */
+export function setCookieValue(setCookies: string[], name: string): string | null {
+  for (let i = 0; i < setCookies.length; i++) {
+    const header = setCookies[i];
+    const semi = header.indexOf(";");
+    const pair = semi < 0 ? header : header.slice(0, semi);
+    const eq = pair.indexOf("=");
+    if (eq < 0) continue;
+    if (trimSpaces(pair.slice(0, eq)) == name) return decodeCookieValue(trimSpaces(pair.slice(eq + 1)));
+  }
+  return null;
 }
 
 function matchesAny(res: RegExp[], name: string): bool {

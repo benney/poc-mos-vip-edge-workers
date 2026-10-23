@@ -152,6 +152,18 @@ for (const path of [
     }
 }
 
+console.log('\naborted instance (devkit behaviour only; the host\'s reaction needs a deploy)');
+for (const path of ['/__probe/abort-client-request', '/__probe/abort-client-response']) {
+    try {
+        const r = await probe(path);
+        record(`${path} result`, `no throw, status ${r.status}`, false);
+    } catch (error) {
+        // The devkit rethrows the trap to its caller. Whether the host 500s or serves the
+        // page unmodified is exactly what the deployed probe answers.
+        record(`${path} result`, `devkit threw: ${error.message.slice(0, 80)}`, false);
+    }
+}
+
 function parseKv(text) {
     const out = {};
     for (const l of (text ?? '').split('\n')) {

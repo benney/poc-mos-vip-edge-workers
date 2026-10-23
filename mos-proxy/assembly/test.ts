@@ -6,9 +6,8 @@ import { cookieValue, decodeCookieValue } from "./cookies";
 import { resourceFor } from "./resource";
 import { bucketFor } from "./sampling";
 import { isWordPressFeed } from "./http";
-import { Config } from "./config";
-import { SurfaceDecisions, buildIdentity } from "./decisions";
-import { compilePlan, serializePlan, parsePlan, applyPlan } from "./rules";
+import { buildIdentity } from "./decisions";
+import { PORTED_CORE_VERSION } from "./version";
 
 // --runtime stub never frees or moves, so dataStart pointers stay valid.
 const keep: Uint8Array[] = [];
@@ -31,6 +30,10 @@ function setOut(s: string): void {
   outLenV = b.byteLength;
 }
 
+export function testPortedCoreVersion(): void {
+  setOut(PORTED_CORE_VERSION);
+}
+
 export function testReadCookie(hPtr: usize, hLen: i32, nPtr: usize, nLen: i32): void {
   setOut(cookieValue(new Cookies(String.UTF8.decodeUnsafe(hPtr, hLen)), String.UTF8.decodeUnsafe(nPtr, nLen)));
 }
@@ -39,26 +42,6 @@ export function testBuildIdentity(aPtr: usize, aLen: i32, jPtr: usize, jLen: i32
   const anon = String.UTF8.decodeUnsafe(aPtr, aLen);
   const jwt = String.UTF8.decodeUnsafe(jPtr, jLen);
   setOut(JSON.stringify(buildIdentity(anon, jwt, true)));
-}
-
-function cfg(injectScriptUrl: string): Config {
-  const c = new Config();
-  c.mosHost = "https://api.example.com";
-  c.surfaceSlug = "slug";
-  c.mosSecretKey = "sk_test_x";
-  c.injectScriptUrl = injectScriptUrl;
-  c.valid = true;
-  return c;
-}
-
-export function testCompilePlan(dPtr: usize, dLen: i32, sPtr: usize, sLen: i32): void {
-  const decisions = JSON.parse<SurfaceDecisions>(String.UTF8.decodeUnsafe(dPtr, dLen));
-  const script = String.UTF8.decodeUnsafe(sPtr, sLen);
-  setOut(serializePlan(compilePlan(cfg(script), decisions)));
-}
-
-export function testApplyPlan(pPtr: usize, pLen: i32): i32 {
-  return applyPlan(parsePlan(String.UTF8.decodeUnsafe(pPtr, pLen)));
 }
 
 // --- config / endpoints / authenticated routes ---
@@ -85,10 +68,25 @@ export function testMergeBody(bPtr: usize, bLen: i32, cPtr: usize, cLen: i32, uP
   ));
 }
 
-import { compileBehaviorSummary, statusAllowsBodyFor } from "./testsupport";
+import { compileBehaviorSummary, identityForDecisionJson, shouldSetAnonCookieFor, statusAllowsBodyFor } from "./testsupport";
 
 export function testCompileBehavior(pPtr: usize, pLen: i32): void {
   setOut(compileBehaviorSummary(String.UTF8.decodeUnsafe(pPtr, pLen)));
+}
+
+export function testIdentityForDecision(cPtr: usize, cLen: i32, sPtr: usize, sLen: i32): void {
+  setOut(identityForDecisionJson(String.UTF8.decodeUnsafe(cPtr, cLen), String.UTF8.decodeUnsafe(sPtr, sLen)));
+}
+
+export function testShouldSetAnonCookie(
+  cPtr: usize, cLen: i32, sPtr: usize, sLen: i32, iPtr: usize, iLen: i32, auth: i32,
+): i32 {
+  return shouldSetAnonCookieFor(
+    String.UTF8.decodeUnsafe(cPtr, cLen),
+    String.UTF8.decodeUnsafe(sPtr, sLen),
+    String.UTF8.decodeUnsafe(iPtr, iLen),
+    auth != 0,
+  ) ? 1 : 0;
 }
 
 export function testStatusAllowsBody(status: i32): i32 {
