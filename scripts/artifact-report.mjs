@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, relative, resolve } from 'node:path';
-import { ROOT } from './paths.mjs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { relative, resolve } from 'node:path';
+import { ROOT, listWorkers } from './paths.mjs';
 
 const args = process.argv.slice(2);
 const check = args.includes('--check');
@@ -15,21 +15,14 @@ function limit(name) {
 
 const maxWasmBytes = limit('MAX_WASM_BYTES');
 const maxMemoryBytes = limit('MAX_WASM_MEMORY_BYTES');
-const exampleRoot = resolve(ROOT, 'examples');
-const sourceDirs = [
-    resolve(ROOT, 'mos-proxy'),
-    ...readdirSync(exampleRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => resolve(exampleRoot, entry.name)),
-].filter((dir) => existsSync(resolve(dir, 'assembly/index.ts')));
-
-const workers = sourceDirs
-    .map((dir) => ({
-        name: basename(dir),
-        source: relative(ROOT, dir),
-        artifact: resolve(ROOT, 'build', basename(dir), 'release.wasm'),
-    }))
-    .filter(({ name, source }) => !selected.size || selected.has(name) || selected.has(source));
+// The deployable is the root worker. Name others (`hello`, `conformance`) to report them too.
+const workers = listWorkers()
+    .filter(({ name, dir }) => (selected.size ? selected.has(name) || selected.has(dir) : dir === '.'))
+    .map(({ name, dir }) => ({
+        name,
+        source: dir,
+        artifact: resolve(ROOT, 'build', name, 'release.wasm'),
+    }));
 
 function formatBytes(bytes) {
     if (bytes % (1024 * 1024) === 0) return `${bytes / (1024 * 1024)} MiB`;

@@ -28,16 +28,3 @@ Bump `PORTED_CORE_VERSION` in `assembly/version.ts`, `config.portedCoreVersion` 
 | D21 | Missing config | Fails when the config is invalid (`new URL` throws). | If `MOS_HOST`, `MOS_SURFACE_SLUG` or `MOS_SECRET_KEY` is missing, the worker does nothing. | A half-configured site should keep serving pages. |
 
 D3 (anonymous cookie) is closed: the port sets `mos_anon_id` under core's rule. IDs are never reused.
-
-## Golden-fixture oracle (not built)
-
-The rows above are checked by tests written by hand. A stronger check is to run the core and the port on the same input and diff what each sends to MOS. It is designed here and not built.
-
-- `conformance/oracle.mjs`, run by `npm run test:oracle`. Not part of `test:all`, because it needs the published core.
-- A project `.npmrc` with `@monetizationos:registry=https://registry.npmjs.org/`, and a devDependency `@monetizationos/proxy@<portedCoreVersion>`.
-- Shared fixtures in `conformance/fixtures/*.json`. Each holds the env and config, the client request, the origin response and the scripted MOS responses.
-- Each fixture runs through the core (`MOSProxyBuilder` with a fixture origin fetcher, a recording API fetcher and a no-op `HtmlRewriterAdapter`) and through the port (the devkit `EdgeWorkerHost`).
-- Compared: each MOS request (method, path, selected headers, JSON body deep-equal), then the final status, headers and Set-Cookie list. Bodies are excluded.
-- Differences are allowlisted in `conformance/divergences.json`, keyed by the D-IDs above. Each entry names the JSON paths or headers it excuses.
-- The run fails on any difference that is not allowlisted, and on any allowlist entry that no longer matches a difference (stale).
-- Run it on every core bump.

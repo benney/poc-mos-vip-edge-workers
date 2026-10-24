@@ -16,8 +16,8 @@ npm run hello        # playground at http://localhost:8787
 - **Rewrites the page** with two declarative `HtmlRules`, gated on `content-type` being
   HTML.
 
-It compiles to 18 KB and imports only 8 host functions. The `mos` example, which adds
-`fetch()`, JSON and config, is 121 KB and imports 15 — most of the difference is json-as.
+It compiles to 19 KB and imports only 8 host functions. The proxy in `assembly/`, which adds
+`fetch()`, JSON and config, is 97 KB and imports 18 — most of the difference is json-as.
 
 `check.mjs` is a good starting point for testing your own worker: build, drive both
 phases, apply the rules, assert on final bytes.

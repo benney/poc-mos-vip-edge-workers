@@ -3,7 +3,7 @@
 //
 // html-rewriter-wasm is CommonJS and instantiates its 906 KB module *synchronously* at
 // import time. That exceeds the browser's 4 KB main-thread sync-compile limit, so in a
-// browser this module must only be imported from a Web Worker (see web/worker.mjs).
+// browser this module must only be imported from a Web Worker (see playground/worker.mjs).
 import { HTMLRewriter } from 'html-rewriter-wasm';
 
 export async function applyHtmlRules(html, rules) {

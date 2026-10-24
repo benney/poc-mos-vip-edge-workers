@@ -14,8 +14,8 @@ import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 
-const ROOT = new URL('./web/dist/', import.meta.url).pathname;
-const ENV_FILE = new URL('./.env.local', import.meta.url).pathname;
+const ROOT = new URL('./dist/', import.meta.url).pathname;
+const ENV_FILE = new URL('../.env.local', import.meta.url).pathname;
 const PORT = Number(process.env.PORT ?? 8787);
 
 const TYPES = {

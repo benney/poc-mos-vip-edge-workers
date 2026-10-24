@@ -1,282 +1,149 @@
 # poc-mos-vip-edge-workers
 
-A local runner, test harness and browser playground for
-[WordPress VIP edge workers](https://www.npmjs.com/package/@automattic/vip-edge-workers-sdk),
-plus a real-world example worker.
+A [MonetizationOS](https://monetizationos.com) proxy that runs as a
+[WordPress VIP edge worker](https://github.com/Automattic/vip-edge-workers-sdk). MOS
+rewrites the page, not the edge: the worker sends the served page to MOS and swaps in what
+comes back. It is a hand port of the core `@monetizationos/proxy`, tracking 1.8.0. The
+intentional differences are in [`DIVERGENCES.md`](DIVERGENCES.md).
 
-The SDK ships the guest half of the ABI — AssemblyScript sources you compile with `asc`.
-It ships no host, so there is no way to execute a worker without deploying it. This repo
-implements the host side in Node: the msgpack wire formats, every host function, and the
-pointer conventions. That makes a compiled `.wasm` runnable, testable, and inspectable in
-a browser before it ever reaches the edge.
-
-Not affiliated with Automattic. There is one worker, [`mos-proxy`](mos-proxy), a port of a
-production CDN proxy. Where it differs from the core proxy is in
-[`mos-proxy/DIVERGENCES.md`](mos-proxy/DIVERGENCES.md).
+Not affiliated with Automattic. The worker is AssemblyScript compiled to WebAssembly with
+the SDK's own toolchain. The SDK ships no host, so the repo also carries the local one it
+is tested on: [`devkit/`](devkit).
 
 ```bash
 npm install
-npm run test:all      # 377 assertions across the examples
-npm run web           # playground at http://localhost:8787
-npm run serve         # a worker as a local edge in front of a real MOS (see scripts/serve.mjs)
-npm run hello         # playground with the minimal example instead
+npm run build        # -> build/mos-proxy/release.wasm, the worker to deploy
+npm run test:all     # every suite below except test:live
+npm run web          # playground at http://localhost:8787
 ```
 
-## What's here
+## The pipeline
 
-|                                                |                                                                                                    |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| [`devkit/host.mjs`](devkit/host.mjs)           | The host ABI in ~380 lines of dependency-free JS. Runs in Node, a browser, or a Web Worker.        |
-| [`devkit/rewrite.mjs`](devkit/rewrite.mjs)     | Applies a worker's `HtmlRules` with real lol-html, the same engine the VIP host uses.              |
-| [`web/`](web)                                  | Browser playground: edit a request, watch the worker run, read the rewritten HTML.                 |
-| [`examples/hello`](examples/hello)             | 18 KB worker. Both phases, a short-circuit, two HTML rules, 9 assertions.                          |
-| [`examples/crypto`](examples/crypto)           | Host-executed HMAC and HS256 JWT, verified against `node:crypto`, 15 assertions.                   |
-| [`mos-proxy`](mos-proxy)                       | The MOS worker. Sends the served page to MOS after the cache and swaps in its rewrite.             |
-| [`examples/conformance`](examples/conformance) | Probe worker: deploy it to learn what the real host does.                                          |
-| [`examples/wire`](examples/wire)               | Pins the devkit's JS codec to the SDK's own AssemblyScript codec.                                  |
-
-All 32 host functions SDK 0.6 declares are implemented — `header.*`, `request.*`,
-`response.*`, `env.*`, `html.*`, `kv.*`, `crypto.*` and `regex.*`.
-
-## Running a worker
-
-```js
-import { readFileSync } from 'node:fs';
-import { EdgeWorkerHost } from './devkit/host.mjs';
-import { applyHtmlRules } from './devkit/rewrite.mjs';
-
-const host = await new EdgeWorkerHost(readFileSync('build/hello/release.wasm')).init();
-
-// Phase 1: the request. Returns the mutated request, or the response if the
-// worker short-circuited with respondWith/respondText.
-const req = await host.clientRequest({ method: 'GET', url: '/', headers: [['host', 'example.com']] });
-
-// Phase 2: the response. `snapshot` is what the origin saw — the worker reads it
-// back through resp.request.
-const res = await host.originResponse({ status: 200, headers: [['content-type', 'text/html']], snapshot: req });
-
-// The host collects the rules the worker installed; apply them to get final bytes.
-const html = await applyHtmlRules('<html><body><p>hi</p></body></html>', res.rules);
-```
-
-`env` supplies `getenv`, and `fetchHandler` answers the worker's outbound `fetch()`:
-
-```js
-new EdgeWorkerHost(wasm, {
-    env: { API_KEY: 'test' },
-    fetchHandler: async ({ method, url, headers, body }) => ({
-        status: 200, headers: [['content-type', 'application/json']], body: '{"ok":true}',
-    }),
-});
-```
-
-KV and rate limiters are in-memory and honour the documented caps (64 B keys, 10 KiB
-values), so an oversize write fails locally too. `crypto.*` is backed by a pure-JS
-SHA-256 rather than WebCrypto, which is async-only and cannot implement a synchronous
-host call; `getRandomValues` is the synchronous exception. `regex.*` runs on JS `RegExp`,
-where the host runs Rust's `regex` crate: they agree on what workers write in practice, and
-the conformance probe's `/__probe/regex` is there to diff the rest.
-
-## Undocumented behaviour
-
-**`fetch()` works in every phase.** Until 2026-10-13 it was client-request only and any
-other phase returned `errorKind: "phase_not_allowed"`. The host lifted that and SDK 0.7.0
-shipped it. A call can now depend on the response, which is what lets the MOS worker decide
-in `onClientResponse`, after the cache. The SDK's `errorKind` list changed with it:
-`phase_not_allowed` is gone and `bad_request` and `hops_exhausted` are new.
-
-**Body markers were misnamed until SDK 0.7.1.** A worker gets a phase's body only if it
-exports that phase's marker, but SDK 0.6.0 exported `client_response_body` and friends while
-the runtime looks for `needs_client_response_body` (`on_client_response_body` before
-edge-workers `6c106196`, 2026-10-14). Neither runtime name had ever matched, so on VIP
-`req.body` and `resp.body` stayed null and `text()` returned null, as if no marker were
-exported. Found on a real deploy of `mos-proxy`, 2026-10-18. 0.7.0 switched the SDK's exports to the
-old `on_` names and 0.7.1 to the current `needs_` ones, so workers re-export the SDK's
-markers directly and the devkit buffers a body only for `needs_`.
-
-**Crypto size limits are the host's.** From 0.7.0 `sha256`, `hmacSha256`, `secureCompare`,
-`jwtVerifyHs256` and `getRandomValues` throw a `RangeError` when an input is over a limit
-the host owns and the SDK no longer states. The devkit doesn't model those limits, so an
-oversize input passes locally.
-
-**`onOriginResponse` is the only phase that can read a header you set.**
-`resp.request` in `onClientResponse` is the request as the client sent it, so a header set
-in `onClientRequest` is invisible there. In `onOriginResponse` the snapshot is taken at the
-origin socket and does include it. SDK 0.6 documents this as per-socket snapshots; before
-that it was only observable.
-
-**`HtmlRules` is write-only.** It can insert, replace, remove and set attributes, but it
-cannot read. There is no way to get the value of a `<meta>` tag into your worker. There
-is also no `onEndTag`, so no range replacement.
-
-**AssemblyScript is not TypeScript.** No closures, no `try`/`catch` (a throw aborts), no
-`Promise`, no union types, no spread, no `for…of`, no `Record<string, unknown>`. Fail-open
-error handling has to be rebuilt as checked returns.
-
-**`JSON.Obj.getAs<T>()` in json-as only works for `JSON.Obj` and `string`.** Arrays and
-`Map` abort with a holey-array error; `getAs<i32>` silently returns `0`. To read a mixed
-object, parse it twice — as `JSON.Obj` for key presence, as a typed class for values.
-`mos-proxy/assembly/behavior.ts` does this, because it needs to distinguish an absent
-key from a null one.
-
-**lol-html must be instantiated in a Web Worker.** `html-rewriter-wasm` does a
-_synchronous_ `new WebAssembly.Module()` on a 906 KB binary at import time. Browsers cap
-main-thread sync compilation at 4 KB; Web Workers have no cap.
-
-**`html-rewriter-wasm` defeats bundlers on purpose**, writing
-`require(String.raw\`./asyncify.js\`)` so the specifier cannot be statically resolved.
-[`scripts/build-web.mjs`](scripts/build-web.mjs) rewrites those to static requires in an
-`onLoad` hook, shims `fs`/`path`/`util`/`assert`, and inlines the wasm as base64.
-
-**Sandboxed iframes don't appear in CDP full-page screenshots.** They render
-out-of-process, so `captureBeyondViewport` shows them blank. Scroll into view and capture
-the viewport instead.
-
-## The playground
-
-```bash
-npm run web
-```
-
-Pick a scenario, edit the env vars, request, or origin HTML, and see the outbound calls,
-the rules the worker installed, and the final status, headers and rewritten HTML, with a
-sandboxed render preview. It runs the real compiled `.wasm` and real lol-html.
-
-It does not reproduce host limits: the 2 s fetch budget, the per-worker concurrency cap
-and real cache behaviour only exist on VIP. Treat it as an inspection surface, not a
-fidelity guarantee.
-
-`npm run hello` serves the minimal example instead. Any example with a `presets.mjs` can
-be served with `node scripts/build.mjs <name> && node scripts/build-web.mjs <name>`.
-
-The playground shell is example-agnostic, but the **live mode** toggle in
-[`server.mjs`](server.mjs) is wired to the `mos-proxy`'s config shape
-(`MOS_HOST`/`MOS_SURFACE_SLUG`/`MOS_TOKEN`). Adapt it if you point live mode at a
-different API.
-
-## How the SDK is consumed
-
-The SDK is consumed as an **unmodified npm dependency**. Nothing is vendored, forked or
-patched. `asc` resolves the SDK's AssemblyScript sources out of `node_modules` via
-`--path`, which is exactly what the build script in the SDK's own README does:
+The worker runs in `onClientResponse`, after the cache, and sends MOS the page itself:
 
 ```
-examples/<name>/assembly/index.ts
-  imports @automattic/vip-edge-workers-sdk/assembly/index   (guest half of the ABI)
-  compiled by asc --path node_modules  ->  build/<name>/release.wasm
-                                              |
-                                        devkit/host.mjs     (host half, ours)
+onClientRequest   1a  /mos-endpoints/*      -> fetch API, respondWith  (short-circuit)
+                  1b  authenticated routes  -> merge body + identity, respondWith
+                  path not an asset or ignored -> accept-encoding: identity
+                        |
+              (cache, or origin on a miss: the page is stored as the origin sent it)
+                        |
+onClientResponse  text/html, not a redirect, path not ignored, uncompressed?
+                                       no  -> served as is
+                  POST /api/v1/surface-decisions
+                       http.proxyOrigin = { status, body }
+                  origin status + headers
+                    + anon cookie + surfaceBehavior.http ops
+                    + surfaceBehavior.http.body if present, else the page as served
+                  cache-control: private, no-store
 ```
 
-**`devkit/host.mjs` reimplements the SDK's msgpack encoding in JavaScript**, because
-their codec is AssemblyScript and cannot be imported into Node. That leaves duplicated
-knowledge with no compile-time link, and the SDK ships no protocol version constant to
-check against. Two things guard against drift:
+VIP caches the origin's page and each reader's copy is transformed on the way out, so
+the origin renders a page once per cache lifetime. Every page view still makes one MOS
+call carrying the page.
 
-- [`examples/wire`](examples/wire) compiles the SDK's _own_ codec and asserts ours
-  against it in both directions, byte for byte. A format change fails there instead of
-  silently desyncing.
-- `@automattic/vip-edge-workers-sdk` is pinned to an exact version, not a caret range,
-  so an upgrade is deliberate and runs that suite.
+MOS fills `resource.meta` from the page and applies `componentBehaviors` with the same
+transforms as the Cloudflare proxy, `replaceRange` included. That needs whole-body mode
+switched on for the org (MOS answers 403 otherwise) and a secret (`sk_`) key, because
+`http` is secret-key only. The field is undocumented.
 
-`html-rewriter-wasm` is pinned exactly for the same reason: the browser build rewrites
-its `require(String.raw…)` calls with a regex, which is a coupling to its source text.
+`resp.request` in `onClientResponse` is the request as the client sent it, which is all
+the decision needs. Identity prefers the anon or JWT cookie the origin sets in its
+response over the request's cookies.
 
-## Verifying against the real host
+## What it does
 
-**The host here is an implementation of the SDK's sources
-and README, not the runtime Automattic runs.** Passing tests locally proves your worker
-behaves correctly against this reading of the contract. It does not prove the reading is
-right.
+| Capability | Notes |
+|---|---|
+| Identity from cookies | JWT wins, then an existing anonymous id, else mint a new one |
+| Surface-decisions call | json-as schemas; dynamic-key `componentBehaviors` via `Map<string, T>` |
+| Custom endpoints | `<prefix>/rest?q` proxied to the API, client method/headers/body forwarded with `x-mos-key` and `x-mos-endpoint-request-context` |
+| Authenticated routes | Client JSON body merged with resolved identity, called with `Authorization: PublicBearer <key>`. The four default routes are always on |
+| HTTP-level behaviour | Header replace/add/remove, cookies, status override, full-body replacement |
+| Cookies to decisions | `MOS_SURFACE_DECISIONS_COOKIES`: matching request cookies, then the origin's Set-Cookie values, sent decoded as `http.cookies` |
+| Resource fields | `buildResource` in `assembly/resource.ts` adds or overrides fields over `{ id: path }`, like the upstream `ResourceProvider`. Edit it per site; string values only |
+| Fail-open | Every failure is a checked return; an unconfigured or erroring worker passes through |
 
-Three things are verified by construction:
+The anonymous cookie is set as the original does: when MOS minted the id, or for a JWT fallback that MOS reports unauthenticated when the reader has no anonymous cookie.
 
-- **Wire formats** come from the SDK's own `msgpack.ts` and `api.ts` — the host decodes
-  exactly what the SDK's encoder writes, rather than a guess at the format.
-- **The import surface** is checked against every `@external` declaration in the SDK, so
-  a worker cannot call a host function the devkit does not implement.
-- **The compiled artifact** is produced by the SDK's own toolchain and exports the ABI
-  symbols its `assembly/index.ts` defines.
+## Config
 
-Not verifiable locally:
+Read via `getenv`. `MOS_HOST`, `MOS_SURFACE_SLUG` and `MOS_SECRET_KEY` are required.
+Missing any one makes the worker pass through untouched.
 
-- Whether host-side _semantics_ match the README — most importantly whether
-  `onOriginResponse` really sees request-phase header mutations.
-- Enforced limits: the 2 s fetch budget, per-worker FIFO concurrency, 1 KiB header names,
-  64 KiB values, 256 rules / 64 KiB per `install()`.
-- What the host does with an aborted instance. AssemblyScript has no `try`/`catch`, so a
-  throw from `install()` aborts — whether that becomes a 500 or fails open is unknown. The conformance probes
-  `/__probe/abort-client-request` and `/__probe/abort-client-response` answer it on a deploy.
-- Cache behaviour, and whether `onOriginResponse` really only runs on a cache miss.
-- Which selectors the host's lol-html build accepts. This repo pins
-  `html-rewriter-wasm@0.4.1`; the host's version may differ.
+| Var | Default | Notes |
+|---|---|---|
+| `MOS_HOST` | none | MOS API origin. Required |
+| `MOS_SURFACE_SLUG` | none | Surface to decide for. Required |
+| `MOS_SECRET_KEY` | none | Required. Must be a secret `sk_` key for the page flow, since `http` is secret-key only |
+| `MOS_ENDPOINTS_PREFIX` | `/mos-endpoints/` | Custom endpoint path prefix. These send `x-mos-key: PublicBearer <key>` and `x-mos-endpoint-request-context` |
+| `MOS_AUTHENTICATED_ROUTES` | none | `METHOD /match>/apiPath`, comma-separated. POST/PUT/PATCH only. These send `Authorization: PublicBearer <key>`. `POST /mos-api/offer-redemptions`, `/mos-api/access-checks`, `/mos-api/surface-decisions` and `/mos-api/counter-updates` are always appended after this list |
+| `MOS_ANON_COOKIE` | `mos_anon_id` | |
+| `MOS_JWT_COOKIE` | `mos_user_jwt` | |
+| `MOS_ANON_FALLBACK` | `true` | `false` opts out of minting a fallback anonymous id |
+| `MOS_IGNORE_PREFIXES` | none | Comma-separated path prefixes |
+| `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
+| `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
+| `MOS_DECISIONS_PERCENT` | `100` | Share of readers (0-100) whose pages call MOS; the rest get the page as cached. Sticky per reader: a random token in a `mos_bucket` cookie, hashed to a bucket. Readers without cookies, such as most crawlers, roll per request |
+| `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
-[`examples/conformance`](examples/conformance) exists to close that gap. It is a worker
-whose only job is to report what the host actually does, as response headers and plain
-text. Deploy it once, then diff against the same probes run locally:
+WordPress paths that are never reader pages are always skipped, on top of the ignore lists:
+`/wp-admin/`, `/wp-login.php`, `/wp-json/`, `/xmlrpc.php`, `/wp-cron.php`, `/wp-includes/`,
+`/wp-content/`, and feeds (`/feed/`, `/comments/feed/`, `/category/news/feed/atom/` and so on).
 
-```bash
-node examples/conformance/check.mjs                     # what the devkit believes
-curl -sSD - https://<site>/__probe/snapshot -o /dev/null   # what the host does
-```
+The `x-mos-proxy-version` header the worker sends is the core version it tracks (1.8.0).
 
-The probe also checks the devkit against itself; see
-[`examples/conformance`](examples/conformance) for the defects that has caught.
+## Failure handling
 
-Until it has run on real VIP infrastructure, treat local green as "consistent with the
-documented contract", not "will work in production".
+| Failure | Served |
+|---|---|
+| MOS fails | The page as served, unmodified |
+| Response is not `text/html`, is a redirect, is compressed, or the path is ignored | As served, no MOS call |
+| Unconfigured | Pass-through |
 
-## Testing a worker
+As with every MOS proxy, a failed decision serves the full page.
 
-Every suite runs against the compiled binary rather than a re-implementation:
+Everything about running against a real org is in [`playground/`](playground). What the
+real VIP host is known to do, and the probe that finds out, is in
+[`tools/conformance/`](tools/conformance).
 
-| Command                    | What it does                                                            |
-| -------------------------- | ----------------------------------------------------------------------- |
-| `npm run test:wire`        | Devkit codec vs the SDK's own codec, both directions (45)               |
-| `npm run test:hello`       | Minimal worker end to end (9)                                           |
-| `npm run test:crypto`      | Host crypto through the ABI, digests checked against `node:crypto` (15) |
-| `npm test`                 | Unit-tests worker logic over an explicit UTF-8 ABI (97)                 |
-| `npm run test:e2e`         | Full pipeline against a fake API and fake origin (84)                   |
-| `npm run test:web`         | The bundled browser worker under a simulated Web Worker (28)            |
-| `npm run test:live`        | Drives the playground in headless Chrome against a stand-in org (22)    |
-| `npm run test:conformance` | Prints the host-behaviour report to diff against a real deploy          |
-| `npm run test:artifacts`   | Builds every release worker and reports startup linear memory           |
+## Testing
 
-`npm run artifact:report` inspects existing release artifacts without rebuilding them.
-Once VIP supplies numeric limits, set `MAX_WASM_BYTES` and
-`MAX_WASM_MEMORY_BYTES` when running `npm run test:artifacts` to turn the report into a
-failing gate. The memory figures are the instantiated module's startup linear memory;
-they do not replace a real-host probe for peak allocation or buffered-body behaviour.
+Every suite runs against the compiled binary rather than a re-implementation.
+
+| Command                    | What it does                                                         |
+| -------------------------- | -------------------------------------------------------------------- |
+| `npm test`                 | Unit-tests worker logic over an explicit UTF-8 ABI                   |
+| `npm run test:e2e`         | Full pipeline against a fake API and fake origin                     |
+| `npm run test:web`         | The bundled browser worker under a simulated Web Worker              |
+| `npm run test:wire`        | Devkit codec vs the SDK's own codec, both directions                 |
+| `npm run test:hello`       | The minimal example end to end                                       |
+| `npm run test:conformance` | Prints the devkit's answers to the host probes, to diff against VIP  |
+| `npm run test:artifacts`   | Builds every release worker and reports size and startup memory      |
+| `npm run test:live`        | Drives the playground in headless Chrome against a stand-in org      |
 
 `test:live` needs Chrome; set `CHROME_PATH` if it isn't found automatically.
 
-One wrinkle worth knowing if you write your own harness: `fetch()` is synchronous inside
-wasm, but a realistic `fetchHandler` is async. `host.mjs` reruns the phase once per fetch:
-each pass replays the results resolved so far, and the first unresolved call gets a benign
-error, is recorded, resolved, and the pass reruns. So a fetch can depend on an earlier
-one's response.
+`npm run artifact:report` inspects existing release artifacts without rebuilding them. Once
+VIP supplies numeric limits, set `MAX_WASM_BYTES` and `MAX_WASM_MEMORY_BYTES` when running
+`npm run test:artifacts` to turn the report into a failing gate. The memory figures are the
+instantiated module's startup linear memory; they do not replace a real-host probe for peak
+allocation or buffered-body behaviour.
 
 ## Layout
 
 ```
-devkit/host.mjs          host ABI (msgpack, host functions, probe/replay)
-devkit/rewrite.mjs       HtmlRules -> real lol-html
-devkit/chrome.mjs        locates a browser for the CDP drivers
-devkit/shims/            CommonJS shims so lol-html bundles for the browser
-web/index.html           playground page
-web/ui.mjs               playground UI (main thread)
-web/worker.mjs           playground pipeline (Web Worker: host + lol-html)
-scripts/build.mjs        asc build for one example
-scripts/build-web.mjs    esbuild bundle for one example
-scripts/serve.mjs        a worker as a local edge: real fetches, in-memory cache, demo origin
-server.mjs               static server, plus an optional live pass-through
-devkit/crypto.mjs        sync SHA-256/HMAC/JWT backing the crypto host calls
-examples/hello/          minimal worker
-examples/crypto/         host-executed HMAC and JWT
-mos-proxy/               the MOS worker this devkit was built for
-examples/conformance/    probe worker for validating the host
-examples/wire/           wire-format conformance against the SDK's codec
+assembly/        the worker (AssemblyScript)
+DIVERGENCES.md   where it differs from core @monetizationos/proxy, by ID
+test/            unit, e2e, browser-bundle and live suites; wire/ pins the devkit codec to the SDK's
+devkit/          the host half of the ABI in JS: msgpack, host functions, real lol-html
+playground/      browser playground and local server, with an optional live pass-through
+tools/conformance/  probe worker to deploy to VIP, and the devkit's answers to compare
+examples/hello/  the smallest worker that exercises both phases
+scripts/         asc build, playground bundle, artifact report, a worker as a local edge
 ```
+
+[`AGENTS.md`](AGENTS.md) says where to look when a question is about the SDK or the real host.
 
 ## License
 
