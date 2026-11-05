@@ -67,12 +67,17 @@ onClientResponse((resp: Response): void => {
 });
 
 function decide(cfg: Config, req: Request, resp: Response): void {
-  const html = resp.text();
-  if (html === null) return;
+  const page = resp.body;
+  if (page === null) return;
 
   const origin = new ProxyOrigin();
   origin.status = resp.status;
-  origin.body = html;
+  // Streamed, the page goes as raw bytes after the JSON line and never becomes a string.
+  if (!cfg.decisionStream) {
+    const html = resp.text();
+    if (html === null) return;
+    origin.body = html;
+  }
 
   const path = req.path;
   const host = req.headers.get("host");
@@ -81,7 +86,7 @@ function decide(cfg: Config, req: Request, resp: Response): void {
   const referer = req.headers.get("referer");
   const setCookies = resp.headers.getSetCookie();
   const sentIdentity = identityForDecision(cfg, req.cookies, setCookies);
-  const decisions = fetchDecisions(
+  const decided = fetchDecisions(
     cfg,
     sentIdentity,
     resourceFor(path, buildResource(req, resp)),
@@ -91,8 +96,11 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     referer,
     selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, setCookies),
     origin,
+    cfg.decisionStream ? page : null,
   );
-  if (decisions === null) return; // fail open: the page as served (D12)
+  if (decided === null) return; // fail open: the page as served (D12)
+  const decisions = decided.decisions;
+  const streamedPage = decided.page;
 
   // Identity is persisted before the behaviour ops, matching the upstream stage order,
   // so a `cookies` replacement in surfaceBehavior overrides it. Only when core would set it.
@@ -102,13 +110,17 @@ function decide(cfg: Config, req: Request, resp: Response): void {
   }
 
   // MOS returns the transformed page, or the workflow's own, in surfaceBehavior.http.body.
+  // Streamed, the transformed page follows the JSON line instead; the workflow's stays in the JSON.
   const behavior = compileHttpBehavior(decisions.surfaceBehavior.http);
   if (behavior !== null) {
     const status = applyHttpOps(behavior.ops, resp.headers);
     if (status != 0) resp.status = <u16>status;
     if (behavior.hasBody) resp.setBodyText(behavior.body);
+    else if (streamedPage !== null) resp.body = streamedPage;
     // Core nulls the body whenever the final status cannot carry one.
     if (!statusAllowsBody(<i32>resp.status)) resp.setBodyText("");
+  } else if (streamedPage !== null) {
+    resp.body = streamedPage;
   }
 
   // The reader's copy is personal (D8). The cached page underneath it is untouched.

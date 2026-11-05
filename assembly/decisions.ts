@@ -106,6 +106,14 @@ export const PROXY_CLIENT_HEADER: string = "x-mos-proxy-client";
 // Fixed descriptors, where core sends a runtime one (D11).
 export const PROXY_CLIENT: string = "vip-edge-worker-poc";
 export const WHOLE_BODY_PROXY_CLIENT: string = "vip-edge-worker-whole-body-poc";
+// Both directions: one line of JSON, a newline, then the raw page. No newline means no page.
+export const DECISION_STREAM_CONTENT_TYPE: string = "application/vnd.mos.decision-stream";
+const NEWLINE: u8 = 0x0a;
+
+/** The decision, plus the transformed page when MOS streamed one back after its JSON line. */
+export class Decided {
+  constructor(public decisions: SurfaceDecisions, public page: Uint8Array | null) {}
+}
 
 /** Proxy identification headers sent on every API call. */
 export function setProxyHeaders(headers: Headers, client: string = PROXY_CLIENT): void {
@@ -138,7 +146,20 @@ export function buildIdentity(anonId: string, userJwt: string, fallback: bool): 
   return id;
 }
 
-/** Returns parsed decisions, or null on any failure (fail open). */
+/** JSON line, newline, page bytes. The page is copied once and never decoded. */
+function frame(json: string, page: Uint8Array): Uint8Array {
+  const line = Uint8Array.wrap(String.UTF8.encode(json));
+  const out = new Uint8Array(line.length + 1 + page.length);
+  out.set(line, 0);
+  out[line.length] = NEWLINE;
+  out.set(page, line.length + 1);
+  return out;
+}
+
+/**
+ * Returns parsed decisions, or null on any failure (fail open). With `page`, the request is
+ * framed as a decision stream instead of carrying the page in http.proxyOrigin.body.
+ */
 export function fetchDecisions(
   cfg: Config,
   identity: IdentityPayload,
@@ -149,7 +170,8 @@ export function fetchDecisions(
   referer: string | null,
   cookies: Map<string, string> | null,
   origin: ProxyOrigin | null = null,
-): SurfaceDecisions | null {
+  page: Uint8Array | null = null,
+): Decided | null {
   const body = new DecisionsRequest();
   body.surfaceSlug = cfg.surfaceSlug;
   body.identity = identity;
@@ -165,9 +187,12 @@ export function fetchDecisions(
     body.http = http;
   }
 
-  const headers = mosApiHeaders(cfg, origin !== null && origin.body !== null ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
+  const wholeBody = page !== null || (origin !== null && origin.body !== null);
+  const headers = mosApiHeaders(cfg, wholeBody ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
+  if (page !== null) headers.set("content-type", DECISION_STREAM_CONTENT_TYPE);
 
-  const payload = Uint8Array.wrap(String.UTF8.encode(JSON.stringify(body)));
+  const json = JSON.stringify(body);
+  const payload = page !== null ? frame(json, page) : Uint8Array.wrap(String.UTF8.encode(json));
   const resp: Response = fetch(cfg.mosHost + "/api/v1/surface-decisions", {
     method: "POST",
     headers,
@@ -177,10 +202,13 @@ export function fetchDecisions(
   // No try/catch in AS, so every failure mode is a checked return. Malformed JSON aborts (D12).
   if (resp.isError()) return null;
   if (!resp.ok) return null;
-  const text = resp.text();
-  if (text === null || text.length == 0) return null;
+  const bytes = resp.body;
+  if (bytes === null || bytes.length == 0) return null;
 
-  const decisions = JSON.parse<SurfaceDecisions>(text);
+  // A JSON response has no raw newline, so this also reads a plain JSON reply.
+  const newline = page !== null ? bytes.indexOf(NEWLINE) : -1;
+  const lineLen = newline >= 0 ? newline : bytes.length;
+  const decisions = JSON.parse<SurfaceDecisions>(String.UTF8.decodeUnsafe(bytes.dataStart, <usize>lineLen));
   if (decisions.status != "success") return null;
-  return decisions;
+  return new Decided(decisions, newline >= 0 ? bytes.subarray(newline + 1) : null);
 }
