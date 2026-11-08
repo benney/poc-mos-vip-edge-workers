@@ -107,7 +107,7 @@ export const PROXY_CLIENT_HEADER: string = "x-mos-proxy-client";
 export const PROXY_CLIENT: string = "vip-edge-worker-poc";
 export const WHOLE_BODY_PROXY_CLIENT: string = "vip-edge-worker-whole-body-poc";
 // Both directions: one line of JSON, a newline, then the raw page. No newline means no page.
-export const DECISION_STREAM_CONTENT_TYPE: string = "application/vnd.mos.decision-stream";
+export const DECISION_STREAM_CONTENT_TYPE: string = "application/vnd.mos.decision-stream.v1";
 const NEWLINE: u8 = 0x0a;
 
 /** The decision, plus the transformed page when MOS streamed one back after its JSON line. */

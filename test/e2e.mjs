@@ -49,7 +49,7 @@ function wordpress(state, { url, headers }) {
     };
 }
 
-const STREAM_TYPE = 'application/vnd.mos.decision-stream';
+const STREAM_TYPE = 'application/vnd.mos.decision-stream.v1';
 
 /** Fake MOS: echoes what MOS does with http.proxyOrigin.body via state.respond. */
 function mos(state, { method, url, headers, body }) {
