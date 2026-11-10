@@ -38,9 +38,6 @@ export class SurfaceDecisions {
 export class ProxyOrigin {
   // The cached or origin status; the response phase knows it.
   status: i32 = 0;
-  // MOS applies componentBehaviors to this page and returns it in surfaceBehavior.http.body (D1).
-  @omitnull()
-  body: string | null = null;
 }
 
 // userAgent, clientIP and referer are left out when the request has none, as core does.
@@ -106,6 +103,14 @@ export const PROXY_CLIENT_HEADER: string = "x-mos-proxy-client";
 // Fixed descriptors, where core sends a runtime one (D11).
 export const PROXY_CLIENT: string = "vip-edge-worker-poc";
 export const WHOLE_BODY_PROXY_CLIENT: string = "vip-edge-worker-whole-body-poc";
+// Both directions: one line of JSON, a newline, then the raw page. No newline means no page.
+export const DECISION_STREAM_CONTENT_TYPE: string = "application/vnd.mos.decision-stream.v1";
+const NEWLINE: u8 = 0x0a;
+
+/** The decision, plus the transformed page when MOS streamed one back after its JSON line. */
+export class Decided {
+  constructor(public decisions: SurfaceDecisions, public page: Uint8Array | null) {}
+}
 
 /** Proxy identification headers sent on every API call. */
 export function setProxyHeaders(headers: Headers, client: string = PROXY_CLIENT): void {
@@ -138,7 +143,20 @@ export function buildIdentity(anonId: string, userJwt: string, fallback: bool): 
   return id;
 }
 
-/** Returns parsed decisions, or null on any failure (fail open). */
+/** JSON line, newline, page bytes. The page is copied once and never decoded. */
+function frame(json: string, page: Uint8Array): Uint8Array {
+  const line = Uint8Array.wrap(String.UTF8.encode(json));
+  const out = new Uint8Array(line.length + 1 + page.length);
+  out.set(line, 0);
+  out[line.length] = NEWLINE;
+  out.set(page, line.length + 1);
+  return out;
+}
+
+/**
+ * Returns parsed decisions, or null on any failure (fail open). A secret key streams the page
+ * after the JSON line (D1). A publishable one sends JSON alone, with no `http` and no page (D9).
+ */
 export function fetchDecisions(
   cfg: Config,
   identity: IdentityPayload,
@@ -148,8 +166,9 @@ export function fetchDecisions(
   clientIP: string | null,
   referer: string | null,
   cookies: Map<string, string> | null,
-  origin: ProxyOrigin | null = null,
-): SurfaceDecisions | null {
+  status: i32,
+  page: Uint8Array,
+): Decided | null {
   const body = new DecisionsRequest();
   body.surfaceSlug = cfg.surfaceSlug;
   body.identity = identity;
@@ -161,13 +180,16 @@ export function fetchDecisions(
     http.clientIP = clientIP;
     http.referer = referer;
     http.cookies = cookies;
-    if (origin !== null) http.proxyOrigin = origin;
+    http.proxyOrigin.status = status;
     body.http = http;
   }
 
-  const headers = mosApiHeaders(cfg, origin !== null && origin.body !== null ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
+  const stream = cfg.includeHttp;
+  const headers = mosApiHeaders(cfg, stream ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
+  if (stream) headers.set("content-type", DECISION_STREAM_CONTENT_TYPE);
 
-  const payload = Uint8Array.wrap(String.UTF8.encode(JSON.stringify(body)));
+  const json = JSON.stringify(body);
+  const payload = stream ? frame(json, page) : Uint8Array.wrap(String.UTF8.encode(json));
   const resp: Response = fetch(cfg.mosHost + "/api/v1/surface-decisions", {
     method: "POST",
     headers,
@@ -177,10 +199,13 @@ export function fetchDecisions(
   // No try/catch in AS, so every failure mode is a checked return. Malformed JSON aborts (D12).
   if (resp.isError()) return null;
   if (!resp.ok) return null;
-  const text = resp.text();
-  if (text === null || text.length == 0) return null;
+  const bytes = resp.body;
+  if (bytes === null || bytes.length == 0) return null;
 
-  const decisions = JSON.parse<SurfaceDecisions>(text);
+  // No newline means no page follows: the JSON line alone.
+  const newline = stream ? bytes.indexOf(NEWLINE) : -1;
+  const lineLen = newline >= 0 ? newline : bytes.length;
+  const decisions = JSON.parse<SurfaceDecisions>(String.UTF8.decodeUnsafe(bytes.dataStart, <usize>lineLen));
   if (decisions.status != "success") return null;
-  return decisions;
+  return new Decided(decisions, newline >= 0 ? bytes.subarray(newline + 1) : null);
 }

@@ -50,3 +50,9 @@ error handling has to be rebuilt as checked returns.
 object, parse it twice — as `JSON.Obj` for key presence, as a typed class for values.
 `assembly/behavior.ts` does this, because it needs to distinguish an absent
 key from a null one.
+
+**json-as 1.6.0 corrupts an emoji (any surrogate pair) at some offsets in `JSON.stringify`.**
+In a probe it broke whenever the pair started at offset 3, 7, 11, … of a string (straddling a
+4-character block), sending a lone surrogate. Parsing is fine. The page never goes through
+json-as (it is streamed as raw bytes), but strings in the request's JSON line, such as
+decoded cookies, do.
