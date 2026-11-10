@@ -56,7 +56,7 @@ function mos(state, { method, url, headers, body }) {
     state.mosCalls.push({ method, url, headers, body });
     const path = url.replace('https://api.mos.test', '');
     if (path === '/api/v1/surface-decisions') {
-        if (state.mosFail) return { errorKind: 'timeout', errorMessage: 'upstream slow' };
+        if (state.mosFail) return { errorKind: state.mosFail === true ? 'timeout' : state.mosFail, errorMessage: 'upstream failed' };
         if (state.decisionsStatus && state.decisionsStatus !== 200) {
             const error = { status: 'error', message: 'nope', statusCode: state.decisionsStatus };
             return { status: state.decisionsStatus, headers: [['content-type', 'application/json']], body: JSON.stringify(error) };
@@ -631,8 +631,45 @@ section('decision stream: page goes as raw bytes after the JSON line, comes back
     const failed = await request(down);
     eq('MOS timeout: fail open with the origin page', [failed.status, failed.body], [200, ORIGIN_HTML]);
 
-    const rejected = fresh({ env, decisionsStatus: 403, respondStream: () => { throw new Error('unreached'); } });
-    eq('MOS 403: fail open with the origin page', (await request(rejected)).body, ORIGIN_HTML);
+    // 400: a public key or a JSON line over 1 MiB. 403: whole-body mode is off for the org.
+    for (const decisionsStatus of [400, 403, 500]) {
+        const rejected = fresh({ env, decisionsStatus, respondStream: () => { throw new Error('unreached'); } });
+        const res = await request(rejected);
+        eq(`MOS ${decisionsStatus}: fail open with the origin page`, [res.status, res.body, header(res.headers, 'set-cookie'), header(res.headers, 'cache-control')], [200, ORIGIN_HTML, ['wp_session=xyz; Path=/'], []]);
+    }
+
+    // The host fails the fetch when the response body errors, as MOS's does once a transform fails mid-page.
+    const cut = fresh({ env, mosFail: 'body_read', respondStream: () => { throw new Error('unreached'); } });
+    const torn = await request(cut);
+    eq('body errors mid-page: fail open with the origin page', [torn.status, torn.body], [200, ORIGIN_HTML]);
+}
+
+section('decision stream: the JSON line never holds a raw newline');
+{
+    const state = fresh({
+        env: { ...ENV, MOS_DECISION_STREAM: '1', MOS_SURFACE_DECISIONS_COOKIES: '^theme$' },
+        respondStream: (sent, page) => ({ decision: decisions(), page }),
+    });
+    await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark%0Ablue']] });
+    const body = state.mosCalls[0].body;
+    const newline = body.indexOf('\n');
+    eq('a decoded newline is escaped in the JSON', JSON.parse(body.slice(0, newline)).http.cookies, { theme: 'dark\nblue' });
+    eq('the first newline ends the JSON', body.slice(newline + 1), ORIGIN_HTML);
+}
+
+section('decision stream: the page is not part of the 1 MiB JSON line');
+{
+    const big = ORIGIN_HTML.replace('<p>Paid para.</p>', `<p>Paid para.</p>${'<p>Lorem ipsum dolor sit amet, "quoted" & escaped \\ text.</p>\n'.repeat(30000)}`);
+    const state = fresh({
+        env: { ...ENV, MOS_DECISION_STREAM: '1' },
+        originHtml: big,
+        respondStream: (sent, page) => ({ decision: decisions(), page: page.replace('Free para.', 'FREE') }),
+    });
+    const res = await request(state);
+    const body = state.mosCalls[0].body;
+    const newline = body.indexOf('\n');
+    ok(`${(big.length / 1024 / 1024).toFixed(1)} MB page, ${newline} byte JSON line`, newline < 1024 && body.slice(newline + 1) === big);
+    ok('transformed page served intact', res.body === big.replace('Free para.', 'FREE'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
