@@ -6,7 +6,7 @@
 import { onClientRequest, onClientResponse, Request, Response } from "@automattic/vip-edge-workers-sdk/assembly/index";
 import { Config, loadConfig } from "./config";
 import { selectDecisionCookies } from "./cookies";
-import { fetchDecisions, ProxyOrigin } from "./decisions";
+import { fetchDecisions } from "./decisions";
 import { buildResource, resourceFor } from "./resource";
 import { sampleReader } from "./sampling";
 import { handleAuthenticatedRoute, handleCustomEndpoint, identityForDecision, shouldSetAnonCookie } from "./endpoints";
@@ -67,19 +67,9 @@ onClientResponse((resp: Response): void => {
 });
 
 function decide(cfg: Config, req: Request, resp: Response): void {
+  // The page goes as raw bytes after the JSON line and never becomes a string.
   const page = resp.body;
   if (page === null) return;
-
-  const origin = new ProxyOrigin();
-  origin.status = resp.status;
-  // Streamed, the page goes as raw bytes after the JSON line and never becomes a string.
-  // MOS answers a page from a publishable key with a 400, so only a secret key streams (D9).
-  const stream = cfg.decisionStream && cfg.includeHttp;
-  if (!stream) {
-    const html = resp.text();
-    if (html === null) return;
-    origin.body = html;
-  }
 
   const path = req.path;
   const host = req.headers.get("host");
@@ -97,8 +87,8 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     clientIpFrom(xff),
     referer,
     selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, setCookies),
-    origin,
-    stream ? page : null,
+    resp.status,
+    page,
   );
   if (decided === null) return; // fail open: the page as served (D12)
   const decisions = decided.decisions;
@@ -111,8 +101,8 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     resp.headers.append("set-cookie", cfg.anonCookie + "=" + identifier + "; Path=/");
   }
 
-  // MOS returns the transformed page, or the workflow's own, in surfaceBehavior.http.body.
-  // Streamed, the transformed page follows the JSON line instead; the workflow's stays in the JSON.
+  // The transformed page follows the JSON line. A workflow's own body stays in the JSON, in
+  // surfaceBehavior.http.body, and MOS sends no page with it.
   const behavior = compileHttpBehavior(decisions.surfaceBehavior.http);
   if (behavior !== null) {
     const status = applyHttpOps(behavior.ops, resp.headers);

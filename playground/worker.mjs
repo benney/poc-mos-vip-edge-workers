@@ -8,6 +8,8 @@ let WASM = null;
 
 const MOS_ORIGIN_FALLBACK = { status: 200, headers: [['content-type', 'application/json']], body: '{"ok":true}' };
 
+const STREAM_TYPE = 'application/vnd.mos.decision-stream.v1';
+
 /** Fake MOS API: decisions come from the UI, other paths get an echo response. */
 function makeMosApi(input, trace) {
     return async (call) => {
@@ -17,6 +19,10 @@ function makeMosApi(input, trace) {
         if (path === '/api/v1/surface-decisions') {
             if (input.failDecisions) {
                 result = { errorKind: 'timeout', errorMessage: 'simulated upstream timeout' };
+            } else if (call.headers.some(([n, v]) => n.toLowerCase() === 'content-type' && v === STREAM_TYPE)) {
+                // A secret key streams the page; the page MOS streams back follows the JSON line.
+                const page = input.streamedPage ? `\n${input.streamedPage}` : '';
+                result = { status: 200, headers: [['content-type', STREAM_TYPE]], body: JSON.stringify(input.decisions) + page };
             } else {
                 result = {
                     status: 200,

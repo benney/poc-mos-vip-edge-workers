@@ -22,8 +22,6 @@ export class Config {
   ignorePatterns: string[] = [];
   decisionCookiePatterns: string[] = [];
   decisionsPercent: i32 = 100;
-  // MOS_DECISION_STREAM: send the page as raw bytes after a JSON line, and read it back the same way.
-  decisionStream: bool = false;
   authRoutes: AuthRoute[] = [];
   anonFallback: bool = true;
   /**
@@ -45,8 +43,7 @@ export class Config {
       + this.mosEndpointsPrefix + "\n" + this.anonCookie + "\n" + this.jwtCookie + "\n"
       + this.anonFallback.toString() + "\n" + routes + "\n" + this.ignorePrefixes.join("|")
       + "\n" + this.includeHttp.toString() + "\n" + this.ignorePatterns.join(" ")
-      + "\n" + this.decisionCookiePatterns.join(" ") + "\n" + this.decisionsPercent.toString()
-      + "\n" + this.decisionStream.toString();
+      + "\n" + this.decisionCookiePatterns.join(" ") + "\n" + this.decisionsPercent.toString();
   }
 }
 
@@ -180,8 +177,6 @@ export function loadConfig(): Config {
   c.decisionCookiePatterns = splitSpaces(getenv("MOS_SURFACE_DECISIONS_COOKIES"));
 
   c.decisionsPercent = parsePercent(getenv("MOS_DECISIONS_PERCENT"));
-  const stream = getenv("MOS_DECISION_STREAM");
-  c.decisionStream = stream !== null && (stream == "1" || stream == "true");
 
   c.valid = true;
   return c;

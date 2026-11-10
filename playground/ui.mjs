@@ -54,6 +54,7 @@ function loadPreset(name) {
     $('originHeaders').value = headersToText(preset.origin.headers);
     $('originBody').value = preset.origin.body;
     $('decisions').value = JSON.stringify(preset.decisions, null, 2);
+    $('streamedPage').value = preset.streamedPage ?? '';
     $('failDecisions').checked = preset.failDecisions;
 }
 
@@ -72,6 +73,8 @@ async function applyLiveMode(enabled) {
     $('originWrap').hidden = !enabled;
     decisions.classList.toggle('ignored', enabled);
     decisions.readOnly = enabled;
+    $('streamedPage').classList.toggle('ignored', enabled);
+    $('streamedPage').readOnly = enabled;
     $('decisionsLabel').textContent = enabled
         ? 'Fake API response (ignored — the live API answers)'
         : 'Fake API response (JSON)';
@@ -92,6 +95,8 @@ async function applyLiveMode(enabled) {
         $('originWrap').hidden = true;
         decisions.classList.remove('ignored');
         decisions.readOnly = false;
+        $('streamedPage').classList.remove('ignored');
+        $('streamedPage').readOnly = false;
         return false;
     }
 
@@ -157,6 +162,7 @@ function readInput() {
             body: $('originBody').value,
         },
         decisions,
+        streamedPage: $('streamedPage').value,
         failDecisions: $('failDecisions').checked,
         mode: $('live').checked ? 'live' : 'fake',
         direct: $('liveDirect').checked,
@@ -257,7 +263,11 @@ function renderResult(result) {
 }
 
 function prettyJson(text) {
-    try { return JSON.stringify(JSON.parse(text), null, 2); } catch { return text; }
+    try { return JSON.stringify(JSON.parse(text), null, 2); } catch { /* a decision stream, or not JSON */ }
+    // A decision stream: the JSON line, then the page.
+    const newline = text.indexOf('\n');
+    if (newline === -1) return text;
+    try { return `${JSON.stringify(JSON.parse(text.slice(0, newline)), null, 2)}\n\n${text.slice(newline + 1)}`; } catch { return text; }
 }
 
 function setStatus(text, kind = '') {

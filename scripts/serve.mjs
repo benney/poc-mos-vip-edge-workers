@@ -45,7 +45,10 @@ async function realFetch({ method, url, headers, body }) {
         const res = await fetch(url, { method, headers, body: body ?? undefined, redirect: 'manual' });
         const text = await res.text();
         if (process.env.DEBUG_EDGE && url.includes('surface-decisions')) {
-            try { const d = JSON.parse(text); const b = d.surfaceBehavior?.http?.body; if (b) d.surfaceBehavior.http.body = `<${b.length} chars>`; console.log('DEBUG', JSON.stringify(d)); } catch { console.log('DEBUG', text.slice(0, 500)); }
+            // A decision stream: the JSON line, then the page if one follows.
+            const newline = text.indexOf('\n');
+            const line = newline === -1 ? text : text.slice(0, newline);
+            console.log('DEBUG', line.slice(0, 2000), newline === -1 ? '(no page)' : `+ ${text.length - newline - 1} chars of page`);
         }
         return { status: res.status, headers: [...res.headers], body: text };
     } catch (error) {

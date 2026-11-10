@@ -54,6 +54,7 @@ async function run(name) {
         request: preset.request,
         origin: preset.origin,
         decisions: preset.decisions,
+        streamedPage: preset.streamedPage,
         failDecisions: preset.failDecisions,
     } } });
     const msg = await nextMessage();
@@ -76,13 +77,15 @@ console.log('\nbundled worker: whole-body paywall');
     ok('page replaced', r.outcome === 'replaced', r.outcome);
     ok('one MOS call', r.mosCalls.length === 1);
     ok('status kept', r.final.status === 200, String(r.final.status));
-    ok('MOS body served with the paywall', r.final.body === preset.decisions.surfaceBehavior.http.body && r.final.body.includes('class="paywall"'));
+    ok('streamed page served with the paywall', r.final.body === preset.streamedPage && r.final.body.includes('class="paywall"'));
     ok('promo from MOS served', r.final.body.includes('<aside class="promo">Subscribe for full access</aside>'));
     ok('original second paragraph gone', !r.final.body.includes('second paragraph'));
     const call = r.mosCalls[0].call;
     ok('called surface-decisions', call.url === 'https://api.mos.test/api/v1/surface-decisions', call.url);
-    ok('page sent to MOS as http.proxyOrigin.body', JSON.parse(call.body).http.proxyOrigin.body === preset.origin.body);
-    ok('origin status sent to MOS', JSON.parse(call.body).http.proxyOrigin.status === 200);
+    const newline = call.body.indexOf('\n');
+    ok('sent as a decision stream', sentHeader(call, 'content-type') === 'application/vnd.mos.decision-stream.v1', sentHeader(call, 'content-type'));
+    ok('page streamed after the JSON line', call.body.slice(newline + 1) === preset.origin.body);
+    ok('origin status in the JSON line', JSON.parse(call.body.slice(0, newline)).http.proxyOrigin.status === 200);
     ok('whole-body client header', sentHeader(call, 'x-mos-proxy-client') === 'vip-edge-worker-whole-body-poc', sentHeader(call, 'x-mos-proxy-client'));
     const version = sentHeader(call, 'x-mos-proxy-version');
     ok('proxy version header', portedCoreVersion ? version === portedCoreVersion : /^\d+\.\d+\.\d+$/.test(version ?? ''), String(version));

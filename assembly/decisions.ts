@@ -38,9 +38,6 @@ export class SurfaceDecisions {
 export class ProxyOrigin {
   // The cached or origin status; the response phase knows it.
   status: i32 = 0;
-  // MOS applies componentBehaviors to this page and returns it in surfaceBehavior.http.body (D1).
-  @omitnull()
-  body: string | null = null;
 }
 
 // userAgent, clientIP and referer are left out when the request has none, as core does.
@@ -157,8 +154,8 @@ function frame(json: string, page: Uint8Array): Uint8Array {
 }
 
 /**
- * Returns parsed decisions, or null on any failure (fail open). With `page`, the request is
- * framed as a decision stream instead of carrying the page in http.proxyOrigin.body.
+ * Returns parsed decisions, or null on any failure (fail open). A secret key streams the page
+ * after the JSON line (D1). A publishable one sends JSON alone, with no `http` and no page (D9).
  */
 export function fetchDecisions(
   cfg: Config,
@@ -169,8 +166,8 @@ export function fetchDecisions(
   clientIP: string | null,
   referer: string | null,
   cookies: Map<string, string> | null,
-  origin: ProxyOrigin | null = null,
-  page: Uint8Array | null = null,
+  status: i32,
+  page: Uint8Array,
 ): Decided | null {
   const body = new DecisionsRequest();
   body.surfaceSlug = cfg.surfaceSlug;
@@ -183,16 +180,16 @@ export function fetchDecisions(
     http.clientIP = clientIP;
     http.referer = referer;
     http.cookies = cookies;
-    if (origin !== null) http.proxyOrigin = origin;
+    http.proxyOrigin.status = status;
     body.http = http;
   }
 
-  const wholeBody = page !== null || (origin !== null && origin.body !== null);
-  const headers = mosApiHeaders(cfg, wholeBody ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
-  if (page !== null) headers.set("content-type", DECISION_STREAM_CONTENT_TYPE);
+  const stream = cfg.includeHttp;
+  const headers = mosApiHeaders(cfg, stream ? WHOLE_BODY_PROXY_CLIENT : PROXY_CLIENT);
+  if (stream) headers.set("content-type", DECISION_STREAM_CONTENT_TYPE);
 
   const json = JSON.stringify(body);
-  const payload = page !== null ? frame(json, page) : Uint8Array.wrap(String.UTF8.encode(json));
+  const payload = stream ? frame(json, page) : Uint8Array.wrap(String.UTF8.encode(json));
   const resp: Response = fetch(cfg.mosHost + "/api/v1/surface-decisions", {
     method: "POST",
     headers,
@@ -205,8 +202,8 @@ export function fetchDecisions(
   const bytes = resp.body;
   if (bytes === null || bytes.length == 0) return null;
 
-  // A JSON response has no raw newline, so this also reads a plain JSON reply.
-  const newline = page !== null ? bytes.indexOf(NEWLINE) : -1;
+  // No newline means no page follows: the JSON line alone.
+  const newline = stream ? bytes.indexOf(NEWLINE) : -1;
   const lineLen = newline >= 0 ? newline : bytes.length;
   const decisions = JSON.parse<SurfaceDecisions>(String.UTF8.decodeUnsafe(bytes.dataStart, <usize>lineLen));
   if (decisions.status != "success") return null;

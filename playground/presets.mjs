@@ -19,7 +19,7 @@ const ORIGIN_HTML = `<!doctype html>
 const ENV = {
     MOS_HOST: 'https://api.mos.test',
     MOS_SURFACE_SLUG: 'news',
-    // A fake sk_ shape: the worker only sends the page (`http`) for secret keys. Nothing
+    // A fake sk_ shape: the worker only streams the page for secret keys. Nothing
     // leaves the browser in fake mode. Not sk_(live|test|prod), so the UI does not warn.
     MOS_SECRET_KEY: 'sk_demo_ab12cd',
     MOS_IGNORE_PREFIXES: '/wp-admin,/wp-login.php',
@@ -65,14 +65,13 @@ const req = (over = {}) => ({
 
 export const PRESETS = {
     'Whole-body paywall': {
-        note: 'Anonymous reader. The worker sends the page to MOS (http.proxyOrigin) and serves the body that comes back in surfaceBehavior.http.body: a paywall block and a promo, applied by MOS.',
+        note: 'Anonymous reader. The worker streams the page to MOS after the JSON line and serves the page MOS streams back after the decision: a paywall block and a promo, applied by MOS.',
         env: ENV,
         request: req(),
         origin: origin(),
         failDecisions: false,
-        decisions: decisions({
-            surfaceBehavior: { http: { body: WALLED_HTML } },
-        }),
+        decisions: decisions(),
+        streamedPage: WALLED_HTML,
     },
 
     'Workflow response (402)': {

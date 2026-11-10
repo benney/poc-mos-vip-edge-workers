@@ -21,7 +21,8 @@ const ORIGIN_HTML = `<!doctype html>
 <html><head><title>Story</title><meta name="category" content="sport"></head>
 <body><article class="article-body"><p id="lede">Free para.</p><p>Paid para.</p></article></body></html>`;
 
-const PAYWALLED_HTML = ORIGIN_HTML.replace('<p>Paid para.</p>', '<div class="paywall">Subscribe</div>');
+const paywalled = (page) => page.replace('<p>Paid para.</p>', '<div class="paywall">Subscribe</div>');
+const PAYWALLED_HTML = paywalled(ORIGIN_HTML);
 
 const decisions = (over = {}) => ({
     status: 'success',
@@ -51,7 +52,17 @@ function wordpress(state, { url, headers }) {
 
 const STREAM_TYPE = 'application/vnd.mos.decision-stream.v1';
 
-/** Fake MOS: echoes what MOS does with http.proxyOrigin.body via state.respond. */
+/** The JSON line and the page after it; a body with no newline is all JSON. */
+const split = (body) => {
+    const newline = body.indexOf('\n');
+    return newline === -1 ? { line: body, page: null } : { line: body.slice(0, newline), page: body.slice(newline + 1) };
+};
+
+/**
+ * Fake MOS: a secret key streams the page (JSON line, newline, page) and is answered the same
+ * way; a publishable one sends plain JSON. state.respond(sent, page) returns a decision, which
+ * goes back as the JSON line alone, or { decision, page } to stream a page after it.
+ */
 function mos(state, { method, url, headers, body }) {
     state.mosCalls.push({ method, url, headers, body });
     const path = url.replace('https://api.mos.test', '');
@@ -61,15 +72,13 @@ function mos(state, { method, url, headers, body }) {
             const error = { status: 'error', message: 'nope', statusCode: state.decisionsStatus };
             return { status: state.decisionsStatus, headers: [['content-type', 'application/json']], body: JSON.stringify(error) };
         }
-        if (header(headers, 'content-type')[0] === STREAM_TYPE) {
-            // Decision stream: JSON line, newline, raw page; answered the same way.
-            const newline = body.indexOf('\n');
-            const sent = JSON.parse(newline === -1 ? body : body.slice(0, newline));
-            const { decision, page } = state.respondStream(sent, newline === -1 ? null : body.slice(newline + 1));
-            return { status: 200, headers: [['content-type', STREAM_TYPE]], body: JSON.stringify(decision) + (page === null ? '' : `\n${page}`) };
+        const { line, page } = split(body);
+        const answer = state.respond(JSON.parse(line), page);
+        const { decision, page: out } = 'decision' in answer ? answer : { decision: answer, page: null };
+        if (header(headers, 'content-type')[0] !== STREAM_TYPE) {
+            return { status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify(decision) };
         }
-        const request = JSON.parse(body);
-        return { status: 200, headers: [['content-type', 'application/json']], body: JSON.stringify(state.respond(request)) };
+        return { status: 200, headers: [['content-type', STREAM_TYPE]], body: JSON.stringify(decision) + (out === null ? '' : `\n${out}`) };
     }
     if (path.startsWith('/api/v1/envs/')) {
         const echo = { proxied: path, method, echo: body ? JSON.parse(body) : null };
@@ -119,6 +128,10 @@ async function request(state, { method = 'GET', url = '/story', headers = [['hos
 const header = (headers, name) =>
     Array.isArray(headers) ? headers.filter((h) => h[0].toLowerCase() === name).map((h) => h[1]) : headers.getAll(name);
 
+// What the worker sent MOS: the JSON line, and the page after it.
+const sentBody = (call) => JSON.parse(split(call.body).line);
+const sentPage = (call) => split(call.body).page;
+
 let pass = 0, fail = 0;
 const eq = (name, actual, expected) => {
     const a = JSON.stringify(actual), e = JSON.stringify(expected);
@@ -133,7 +146,8 @@ const fresh = (over = {}) => ({
     mosCalls: [],
     otherFetches: [],
     cache: new Map(),
-    respond: () => decisions({ surfaceBehavior: { http: { body: PAYWALLED_HTML } } }),
+    // MOS applied the paywall component and streams the page back.
+    respond: (sent, page) => (page === null ? decisions() : { decision: decisions(), page: paywalled(page) }),
     ...over,
 });
 
@@ -147,9 +161,11 @@ section('page view: the served page goes to MOS, transformed page comes back');
     eq('WordPress cookie reached the origin', header(state.originCalls[0].headers, 'cookie'), ['wordpress_logged_in=u1']);
     eq('asked origin for an uncompressed page', header(state.originCalls[0].headers, 'accept-encoding'), ['identity']);
 
-    const sent = JSON.parse(state.mosCalls[0].body);
-    eq('sent origin status and page', [sent.http.proxyOrigin.status, sent.http.proxyOrigin.body], [200, ORIGIN_HTML]);
-    eq('and nothing else in proxyOrigin', Object.keys(sent.http.proxyOrigin).sort(), ['body', 'status']);
+    const call = state.mosCalls[0];
+    const sent = sentBody(call);
+    eq('sent as a decision stream', header(call.headers, 'content-type'), [STREAM_TYPE]);
+    eq('origin status in the JSON line, nothing else in proxyOrigin', sent.http.proxyOrigin, { status: 200 });
+    eq('the page follows the newline byte for byte', sentPage(call), ORIGIN_HTML);
     eq('left resource.meta for MOS to read from the page', sent.resource, { id: '/story' });
     eq('identifies as the whole-body client (D11)', header(state.mosCalls[0].headers, 'x-mos-proxy-client'), ['vip-edge-worker-whole-body-poc']);
 
@@ -162,13 +178,13 @@ section('page view: the served page goes to MOS, transformed page comes back');
 
 section('cache: origin rendered once, every reader gets their own page');
 {
-    const state = fresh({ respond: (r) => decisions({ surfaceBehavior: { http: { body: r.http.proxyOrigin.body.replace('Free para.', `Hello ${r.identity.anonymousIdentifier}`) } } }) });
+    const state = fresh({ respond: (r, page) => ({ decision: decisions(), page: page.replace('Free para.', `Hello ${r.identity.anonymousIdentifier}`) }) });
     const a = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=reader-a']] });
     const b = await request(state, { headers: [['host', 'site.test'], ['cookie', 'mos_anon_id=reader-b'], ['accept-encoding', 'br']] });
 
     eq('origin rendered once', state.originCalls.length, 1);
     eq('second reader served from cache', [a.hitOrigin, b.hitOrigin], [true, false]);
-    eq('MOS saw the raw page both times', state.mosCalls.map((c) => JSON.parse(c.body).http.proxyOrigin.body), [ORIGIN_HTML, ORIGIN_HTML]);
+    eq('MOS saw the raw page both times', state.mosCalls.map(sentPage), [ORIGIN_HTML, ORIGIN_HTML]);
     ok('each reader personalised', a.body.includes('Hello reader-a') && b.body.includes('Hello reader-b') && !b.body.includes('reader-a'));
     eq('cached copy is the origin page', [...state.cache.values()].map((r) => r.body), [ORIGIN_HTML]);
 }
@@ -177,11 +193,11 @@ section('cookies forwarded to decisions, as upstream surfaceDecisionsCookies');
 {
     let state = fresh();
     await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark']] });
-    eq('none unless configured', JSON.parse(state.mosCalls[0].body).http.cookies, undefined);
+    eq('none unless configured', sentBody(state.mosCalls[0]).http.cookies, undefined);
 
     state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^wp_ ^theme$' } });
     await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark; wp_session=from-reader']] });
-    eq('matching cookies, origin wins', JSON.parse(state.mosCalls[0].body).http.cookies, { theme: 'dark', wp_session: 'xyz' });
+    eq('matching cookies, origin wins', sentBody(state.mosCalls[0]).http.cookies, { theme: 'dark', wp_session: 'xyz' });
 }
 
 section('MOS_DECISIONS_PERCENT: readers outside it get the page without a MOS call');
@@ -196,7 +212,7 @@ section('MOS_DECISIONS_PERCENT: readers outside it get the page without a MOS ca
     ok('50%: a new reader gets a bucket token', header(first.headers, 'set-cookie').some((c) => /^mos_bucket=[0-9a-f]{16};/.test(c)));
 }
 
-section('no transformed body: page served with the http ops');
+section('no page after the JSON line: origin page served with the http ops');
 {
     const state = fresh({ respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }], removeHeaders: ['etag'] } } }) });
     const res = await request(state);
@@ -220,7 +236,7 @@ section('origin 404 still gets a decision, status preserved');
 {
     const state = fresh({ originStatus: 404 });
     const res = await request(state);
-    eq('sent 404 to MOS', JSON.parse(state.mosCalls[0].body).http.proxyOrigin.status, 404);
+    eq('sent 404 to MOS', sentBody(state.mosCalls[0]).http.proxyOrigin.status, 404);
     eq('served 404 with the transformed page', [res.status, res.body], [404, PAYWALLED_HTML]);
 }
 
@@ -266,15 +282,17 @@ section('custom endpoints still route to MOS');
 section('a large page');
 {
     const big = ORIGIN_HTML.replace('<p>Paid para.</p>', `<p>Paid para.</p>${'<p>Lorem ipsum dolor sit amet, "quoted" & escaped \\ text.</p>\n'.repeat(30000)}`);
-    const state = fresh({ originHtml: big, respond: (r) => decisions({ surfaceBehavior: { http: { body: r.http.proxyOrigin.body.replace('Free para.', 'FREE') } } }) });
+    const state = fresh({ originHtml: big, respond: (r, page) => ({ decision: decisions(), page: page.replace('Free para.', 'FREE') }) });
     const started = performance.now();
     const res = await request(state);
     const ms = performance.now() - started;
     ok(`${(big.length / 1024 / 1024).toFixed(1)} MB page round-trips intact`, res.body === big.replace('Free para.', 'FREE'));
-    console.log(`       ${ms.toFixed(0)} ms in the local host (encode, MOS JSON parse, decode)`);
+    const call = state.mosCalls[0];
+    const line = call.body.indexOf('\n');
+    ok(`the page is not part of the 1 MiB JSON line (${line} bytes)`, line < 1024 && sentPage(call) === big);
+    console.log(`       ${ms.toFixed(0)} ms in the local host (frame, split, copy)`);
 }
 
-const sentBody = (call) => JSON.parse(call.body);
 const setCookieNames = (res) => header(res.headers, 'set-cookie').map((c) => c.split('=')[0]);
 const mosDecision = (id) => ({ identifier: id, isAuthenticated: false, authType: 'anonymous', jwtClaims: {} });
 
@@ -494,11 +512,16 @@ section('gating by response, not by path guess');
 
 section('fail open on a MOS API error');
 {
-    for (const decisionsStatus of [500, 403]) {
+    // 400: a public key or a JSON line over 1 MiB. 403: whole-body mode is off for the org.
+    for (const decisionsStatus of [400, 403, 500]) {
         const state = fresh({ decisionsStatus });
         const res = await request(state);
         eq(`API ${decisionsStatus}: the page as served`, [res.status, res.body, header(res.headers, 'set-cookie'), header(res.headers, 'cache-control')], [200, ORIGIN_HTML, ['wp_session=xyz; Path=/'], []]);
     }
+
+    // The host fails the fetch when the response body errors, as MOS's does once a transform fails mid-page.
+    const torn = await request(fresh({ mosFail: 'body_read' }));
+    eq('body errors mid-page: the page as served', [torn.status, torn.body, header(torn.headers, 'cache-control')], [200, ORIGIN_HTML, []]);
 }
 
 section('partial env passes through');
@@ -580,108 +603,42 @@ section('no-body statuses');
     eq('a 402 override keeps the page', [paid.status, paid.body], [402, ORIGIN_HTML]);
 }
 
-section('decision stream: page goes as raw bytes after the JSON line, comes back the same way');
+section('decision stream: a non-ASCII page passes byte for byte, ops and page together');
 {
-    const env = { ...ENV, MOS_DECISION_STREAM: '1' };
     const html = ORIGIN_HTML.replace('Free para.', 'Frée 🎉 para.');
-    const state = fresh({
-        env,
-        originHtml: html,
-        respondStream: (sent, page) => ({ decision: decisions(), page: page.replace('<p>Paid para.</p>', '<div class="paywall">Subscribe ✓</div>') }),
-    });
+    const state = fresh({ originHtml: html, respond: (sent, page) => ({ decision: decisions(), page: page.replace('<p>Paid para.</p>', '<div class="paywall">Subscribe ✓</div>') }) });
     const res = await request(state);
-
-    const call = state.mosCalls[0];
-    const newline = call.body.indexOf('\n');
-    const sent = JSON.parse(call.body.slice(0, newline));
-    eq('sent as a decision stream', header(call.headers, 'content-type'), [STREAM_TYPE]);
-    eq('identifies as the whole-body client', header(call.headers, 'x-mos-proxy-client'), ['vip-edge-worker-whole-body-poc']);
-    eq('no page in the JSON line', sent.http.proxyOrigin, { status: 200 });
-    eq('the page follows the newline byte for byte', call.body.slice(newline + 1), html);
+    eq('the page follows the newline byte for byte', sentPage(state.mosCalls[0]), html);
     eq('transformed page served', res.body, html.replace('<p>Paid para.</p>', '<div class="paywall">Subscribe ✓</div>'));
-    eq('anon cookie still set from the JSON line', header(res.headers, 'set-cookie'), ['wp_session=xyz; Path=/', 'mos_anon_id=anon-wb-1; Path=/']);
-    eq('reader copy is private', header(res.headers, 'cache-control'), ['private, no-store']);
     eq('cached copy is the origin page', [...state.cache.values()].map((r) => r.body), [html]);
 
-    const ops = fresh({
-        env,
-        respondStream: () => ({ decision: decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }] } } }), page: null }),
-    });
-    const untouched = await request(ops);
-    eq('no newline: origin page with the header ops', [untouched.body, header(untouched.headers, 'x-mos')], [ORIGIN_HTML, ['1']]);
-
-    const paywall = fresh({
-        env,
-        respondStream: () => ({ decision: decisions({ surfaceBehavior: { http: { status: 402, body: 'Pay up' } } }), page: null }),
-    });
-    const paid = await request(paywall);
-    eq("workflow's own body from the JSON line", [paid.status, paid.body], [402, 'Pay up']);
-
-    const both = fresh({
-        env,
-        respondStream: (sent, page) => ({ decision: decisions({ surfaceBehavior: { http: { status: 451 } } }), page: page.replace('Paid para.', 'X') }),
-    });
+    const both = fresh({ respond: (sent, page) => ({ decision: decisions({ surfaceBehavior: { http: { status: 451 } } }), page: page.replace('Paid para.', 'X') }) });
     const both451 = await request(both);
     eq('status op and streamed page together', [both451.status, both451.body], [451, ORIGIN_HTML.replace('Paid para.', 'X')]);
 
-    const empty = fresh({ env, respondStream: () => ({ decision: decisions(), page: '' }) });
+    const empty = fresh({ respond: () => ({ decision: decisions(), page: '' }) });
     eq('an empty page after the newline replaces the page', (await request(empty)).body, '');
-
-    const down = fresh({ env, mosFail: true, respondStream: () => { throw new Error('unreached'); } });
-    const failed = await request(down);
-    eq('MOS timeout: fail open with the origin page', [failed.status, failed.body], [200, ORIGIN_HTML]);
-
-    // 400: a public key or a JSON line over 1 MiB. 403: whole-body mode is off for the org.
-    for (const decisionsStatus of [400, 403, 500]) {
-        const rejected = fresh({ env, decisionsStatus, respondStream: () => { throw new Error('unreached'); } });
-        const res = await request(rejected);
-        eq(`MOS ${decisionsStatus}: fail open with the origin page`, [res.status, res.body, header(res.headers, 'set-cookie'), header(res.headers, 'cache-control')], [200, ORIGIN_HTML, ['wp_session=xyz; Path=/'], []]);
-    }
-
-    // The host fails the fetch when the response body errors, as MOS's does once a transform fails mid-page.
-    const cut = fresh({ env, mosFail: 'body_read', respondStream: () => { throw new Error('unreached'); } });
-    const torn = await request(cut);
-    eq('body errors mid-page: fail open with the origin page', [torn.status, torn.body], [200, ORIGIN_HTML]);
 }
 
-section('decision stream: only with a secret key');
+section('decision stream: only with a secret key (D9)');
 {
     const state = fresh({
-        env: { ...ENV, MOS_DECISION_STREAM: '1', MOS_SECRET_KEY: 'pk_live_ab12cd' },
-        respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }] } } }),
+        env: { ...ENV, MOS_SECRET_KEY: 'pk_live_ab12cd' },
+        respond: (sent, page) => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: page === null ? 'no-page' : 'page' }] } } }),
     });
     const res = await request(state);
     const call = state.mosCalls[0];
-    eq('plain JSON, no page', [header(call.headers, 'content-type'), call.body.includes('\n'), sentBody(call).http], [['application/json'], false, undefined]);
-    eq('the decision still applies to the origin page', [res.body, header(res.headers, 'x-mos')], [ORIGIN_HTML, ['1']]);
+    eq('plain JSON, no http, no page', [header(call.headers, 'content-type'), call.body.includes('\n'), sentBody(call).http], [['application/json'], false, undefined]);
+    eq('identifies as the plain client', header(call.headers, 'x-mos-proxy-client'), ['vip-edge-worker-poc']);
+    eq('the decision still applies to the origin page', [res.body, header(res.headers, 'x-mos'), header(res.headers, 'cache-control')], [ORIGIN_HTML, ['no-page'], ['private, no-store']]);
 }
 
 section('decision stream: the JSON line never holds a raw newline');
 {
-    const state = fresh({
-        env: { ...ENV, MOS_DECISION_STREAM: '1', MOS_SURFACE_DECISIONS_COOKIES: '^theme$' },
-        respondStream: (sent, page) => ({ decision: decisions(), page }),
-    });
+    const state = fresh({ env: { ...ENV, MOS_SURFACE_DECISIONS_COOKIES: '^theme$' } });
     await request(state, { headers: [['host', 'site.test'], ['cookie', 'theme=dark%0Ablue']] });
-    const body = state.mosCalls[0].body;
-    const newline = body.indexOf('\n');
-    eq('a decoded newline is escaped in the JSON', JSON.parse(body.slice(0, newline)).http.cookies, { theme: 'dark\nblue' });
-    eq('the first newline ends the JSON', body.slice(newline + 1), ORIGIN_HTML);
-}
-
-section('decision stream: the page is not part of the 1 MiB JSON line');
-{
-    const big = ORIGIN_HTML.replace('<p>Paid para.</p>', `<p>Paid para.</p>${'<p>Lorem ipsum dolor sit amet, "quoted" & escaped \\ text.</p>\n'.repeat(30000)}`);
-    const state = fresh({
-        env: { ...ENV, MOS_DECISION_STREAM: '1' },
-        originHtml: big,
-        respondStream: (sent, page) => ({ decision: decisions(), page: page.replace('Free para.', 'FREE') }),
-    });
-    const res = await request(state);
-    const body = state.mosCalls[0].body;
-    const newline = body.indexOf('\n');
-    ok(`${(big.length / 1024 / 1024).toFixed(1)} MB page, ${newline} byte JSON line`, newline < 1024 && body.slice(newline + 1) === big);
-    ok('transformed page served intact', res.body === big.replace('Free para.', 'FREE'));
+    eq('a decoded newline is escaped in the JSON', sentBody(state.mosCalls[0]).http.cookies, { theme: 'dark\nblue' });
+    eq('the first newline ends the JSON', sentPage(state.mosCalls[0]), ORIGIN_HTML);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
