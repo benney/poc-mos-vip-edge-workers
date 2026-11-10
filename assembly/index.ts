@@ -73,7 +73,9 @@ function decide(cfg: Config, req: Request, resp: Response): void {
   const origin = new ProxyOrigin();
   origin.status = resp.status;
   // Streamed, the page goes as raw bytes after the JSON line and never becomes a string.
-  if (!cfg.decisionStream) {
+  // MOS answers a page from a publishable key with a 400, so only a secret key streams (D9).
+  const stream = cfg.decisionStream && cfg.includeHttp;
+  if (!stream) {
     const html = resp.text();
     if (html === null) return;
     origin.body = html;
@@ -96,7 +98,7 @@ function decide(cfg: Config, req: Request, resp: Response): void {
     referer,
     selectDecisionCookies(cfg.decisionCookiePatterns, req.cookies, setCookies),
     origin,
-    cfg.decisionStream ? page : null,
+    stream ? page : null,
   );
   if (decided === null) return; // fail open: the page as served (D12)
   const decisions = decided.decisions;

@@ -644,6 +644,18 @@ section('decision stream: page goes as raw bytes after the JSON line, comes back
     eq('body errors mid-page: fail open with the origin page', [torn.status, torn.body], [200, ORIGIN_HTML]);
 }
 
+section('decision stream: only with a secret key');
+{
+    const state = fresh({
+        env: { ...ENV, MOS_DECISION_STREAM: '1', MOS_SECRET_KEY: 'pk_live_ab12cd' },
+        respond: () => decisions({ surfaceBehavior: { http: { addHeaders: [{ name: 'x-mos', value: '1' }] } } }),
+    });
+    const res = await request(state);
+    const call = state.mosCalls[0];
+    eq('plain JSON, no page', [header(call.headers, 'content-type'), call.body.includes('\n'), sentBody(call).http], [['application/json'], false, undefined]);
+    eq('the decision still applies to the origin page', [res.body, header(res.headers, 'x-mos')], [ORIGIN_HTML, ['1']]);
+}
+
 section('decision stream: the JSON line never holds a raw newline');
 {
     const state = fresh({
