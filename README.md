@@ -85,6 +85,7 @@ Missing any one makes the worker pass through untouched.
 | `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
 | `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
 | `MOS_DECISIONS_PERCENT` | `100` | Share of readers (0-100) whose pages call MOS; the rest get the page as cached. Sticky per reader: a random token in a `mos_bucket` cookie, hashed to a bucket. Readers without cookies, such as most crawlers, roll per request |
+| `MOS_DECISION_STREAM` | off | `1` or `true` sends the page as raw bytes after a one-line JSON request (`application/vnd.mos.decision-stream.v1`) instead of in `http.proxyOrigin.body`, and reads the transformed page back after the decision's JSON line. Secret key only |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 WordPress paths that are never reader pages are always skipped, on top of the ignore lists:
