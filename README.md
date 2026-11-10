@@ -30,11 +30,13 @@ onClientRequest   1a  /mos-endpoints/*      -> fetch API, respondWith  (short-ci
                         |
 onClientResponse  text/html, not a redirect, path not ignored, uncompressed?
                                        no  -> served as is
-                  POST /api/v1/surface-decisions
-                       http.proxyOrigin = { status, body }
+                  POST /api/v1/surface-decisions  (application/vnd.mos.decision-stream.v1)
+                       JSON line (http.proxyOrigin = { status }), \n, the page's raw bytes
+                  answer: the decision's JSON line, then \n and the transformed page if one follows
                   origin status + headers
                     + anon cookie + surfaceBehavior.http ops
-                    + surfaceBehavior.http.body if present, else the page as served
+                    + surfaceBehavior.http.body if present (a workflow's own body),
+                      else the page after the JSON line, else the page as served
                   cache-control: private, no-store
 ```
 
@@ -45,7 +47,11 @@ call carrying the page.
 MOS fills `resource.meta` from the page and applies `componentBehaviors` with the same
 transforms as the Cloudflare proxy, `replaceRange` included. That needs whole-body mode
 switched on for the org (MOS answers 403 otherwise) and a secret (`sk_`) key, because
-`http` is secret-key only. The field is undocumented.
+`http` and the page are secret-key only. A publishable key sends plain JSON with neither,
+and the decision is header, status and cookie ops only (D9). The stream is undocumented.
+
+Once the JSON line is out MOS cannot change the status, so a transform that fails mid-page
+errors the response body. The host then fails the fetch and the page is served as it was.
 
 `resp.request` in `onClientResponse` is the request as the client sent it, which is all
 the decision needs. Identity prefers the anon or JWT cookie the origin sets in its
@@ -85,7 +91,6 @@ Missing any one makes the worker pass through untouched.
 | `MOS_IGNORE_PATTERNS` | none | Space-separated path regexes, like the upstream proxy's ignore patterns. A malformed one aborts page requests |
 | `MOS_SURFACE_DECISIONS_COOKIES` | none | Space-separated cookie-name regexes, like the upstream proxy's `surfaceDecisionsCookies` |
 | `MOS_DECISIONS_PERCENT` | `100` | Share of readers (0-100) whose pages call MOS; the rest get the page as cached. Sticky per reader: a random token in a `mos_bucket` cookie, hashed to a bucket. Readers without cookies, such as most crawlers, roll per request |
-| `MOS_DECISION_STREAM` | off | `1` or `true` sends the page as raw bytes after a one-line JSON request (`application/vnd.mos.decision-stream.v1`) instead of in `http.proxyOrigin.body`, and reads the transformed page back after the decision's JSON line. Secret key only |
 | `MOS_ENVIRONMENT` | derived | Overrides the env path segment; only affects custom endpoints |
 
 WordPress paths that are never reader pages are always skipped, on top of the ignore lists:

@@ -112,7 +112,8 @@ is also no `onEndTag`, so no range replacement.
 On a WordPress subsite behind `starts_with "/mos/"`, with the runtime's body markers exported:
 
 - **`fetch()` in `onClientResponse` works**, carrying a ~93 KB page to MOS and back in
-  0.5–0.95 s end to end.
+  0.5–0.95 s end to end. That was the page inside the JSON (`http.proxyOrigin.body`), before
+  the decision stream replaced it; the stream has not been deployed yet.
 - **VIP keeps caching the origin page.** Repeat requests are `x-cache: HIT` with a fresh
   decision each time.
 - **No compression after `onClientResponse`.** A client sending `accept-encoding: gzip, br`
@@ -124,9 +125,10 @@ On a WordPress subsite behind `starts_with "/mos/"`, with the runtime's body mar
   downloads too, up to the host's buffered-body limit. Per the runtime source, a response
   whose `content-length` is over the limit skips a `continue` worker and is served as is,
   and one without a `content-length` that turns out to be over it is a 502. Not yet observed.
-- **Memory.** The stub runtime never frees within a phase. The page, its JSON-encoded copy,
-  the MOS response and the served page all coexist, roughly 4x the page size. A 1.8 MB page
-  round-trips in about 34 ms in the local host.
+- **Memory.** The stub runtime never frees within a phase. The page, its framed copy (JSON
+  line plus page) and the MOS response all coexist, and the served page is a view into the
+  response, roughly 3x the page size. A 1.8 MB page round-trips in about 5 ms in the e2e harness,
+  and 35–50 ms over local HTTP.
 
 The probes above are the place to settle these.
 

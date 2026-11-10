@@ -51,10 +51,10 @@ HTTP 400 {"status":"error","message":"HTTP request information can only be
           included when using a secret API key","statusCode":400}
 ```
 
-The whole `http` object (`url`, `userAgent`, `clientIP`, `referer`, and the page in
-`proxyOrigin`) is secret-key-only, which is sound: a public client should not be able to
-assert a client IP. `includeHttp` mirrors that rule, sending `http` only when the key
-starts with `sk_`, and `@omitnull()` drops the field otherwise.
+The whole `http` object (`url`, `userAgent`, `clientIP`, `referer`, `proxyOrigin`) and a
+streamed page are secret-key-only, which is sound: a public client should not be able to
+assert a client IP. `includeHttp` mirrors that rule, sending `http` and streaming the page
+only when the key starts with `sk_`, and `@omitnull()` drops the field otherwise.
 
 **So in live mode, MOS is sent no page, and decisions are made from identity and resource
 alone.** Live mode shows identity and header/status ops only. Anything that depends on
